@@ -3,6 +3,8 @@
 A Linux-first configuration UI and hardware service for the TreasLin VSDinside N1
 stream controller.
 
+![N1 Stream Controller Studio interface](docs/images/n1-stream-controller-studio.png)
+
 ## First-time setup
 
 Install the pinned vendor SDK and the narrowly scoped udev permission rule:
