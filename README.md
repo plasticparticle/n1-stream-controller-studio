@@ -37,6 +37,21 @@ PORT=4197 npm run dev
 
 Open `http://127.0.0.1:4197` in Chromium.
 
+## Linux Mint tray app
+
+Install the N1 icon in the Mint application menu and start it automatically in the
+notification area:
+
+```bash
+npm run setup:tray
+npm run tray
+```
+
+Click the N1 tray icon to open a chromeless Studio window. Closing the window keeps the
+controller service in the tray. Right-click the icon for Open, Reload, Restart, startup,
+and Quit controls. The tray uses port `4180` by default; override it with
+`N1_STUDIO_PORT` when needed.
+
 ## What works
 
 - Detects the legacy TreasLin USB identity `5548:1002`

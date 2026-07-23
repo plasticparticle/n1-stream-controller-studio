@@ -6,8 +6,10 @@
   "scripts": {
     "dev": "node server.js",
     "start": "node server.js",
-    "check": "node --check app.js && node --check server.js && python3 -m py_compile driver/n1_service.py",
+    "check": "node --check app.js && node --check server.js && python3 -m py_compile driver/n1_service.py scripts/n1_tray.py && bash -n scripts/*.sh",
+    "tray": "python3 scripts/n1_tray.py --show",
     "setup:driver": "bash scripts/setup-driver.sh",
+    "setup:tray": "bash scripts/install-tray.sh",
     "setup:udev": "bash scripts/install-udev.sh",
     "driver:probe": ".venv/bin/python driver/n1_service.py --probe"
   }

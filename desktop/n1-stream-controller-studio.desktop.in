@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=N1 Stream Controller Studio
+Comment=Configure the VSDinside N1 stream controller
+Exec="@PROJECT_DIR@/scripts/n1_tray.py" --show
+Icon=n1-stream-controller-studio
+Terminal=false
+Categories=Utility;
+StartupNotify=true
+Keywords=stream;controller;deck;N1;VSDinside;
