@@ -1,0 +1,21 @@
+{
+  "profile": "streaming",
+  "brightness": 86,
+  "keys": [
+    { "id": "scene", "name": "Switch Scene", "title": "STARTING", "icon": "camera", "color": "#37b7ff", "target": "Starting Soon" },
+    { "id": "scene", "name": "Switch Scene", "title": "MAIN CAM", "icon": "camera", "color": "#37b7ff", "target": "Main Camera" },
+    { "id": "scene", "name": "Switch Scene", "title": "GAME", "icon": "camera", "color": "#a78bfa", "target": "Game Capture" },
+    { "id": "scene", "name": "Switch Scene", "title": "BRB", "icon": "camera", "color": "#ff9f1c", "target": "Be Right Back" },
+    { "id": "record", "name": "Start Recording", "title": "RECORD", "icon": "record", "color": "#ef476f" },
+    { "id": "mic", "name": "Mute Microphone", "title": "MIC", "icon": "mic", "color": "#ef476f", "command": "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle" },
+    { "id": "volume", "name": "Mute Speakers", "title": "SOUND", "icon": "volume", "color": "#38d996", "command": "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle" },
+    { "id": "chat", "name": "Show Chat", "title": "CHAT", "icon": "message", "color": "#a78bfa" },
+    { "id": "music", "name": "Play / Pause", "title": "MUSIC", "icon": "music", "color": "#38d996", "command": "playerctl play-pause" },
+    { "id": "website", "name": "Open Website", "title": "DASHBOARD", "icon": "web", "color": "#37b7ff" },
+    { "id": "launch", "name": "Launch App", "title": "OBS", "icon": "app", "color": "#38d996", "command": "obs" },
+    { "id": "launch", "name": "Launch App", "title": "BROWSER", "icon": "app", "color": "#ff9f1c", "command": "xdg-open https://example.com" },
+    { "id": "hotkey", "name": "Keyboard Shortcut", "title": "CLIP", "icon": "keyboard", "color": "#e8ff58" },
+    { "id": "folder", "name": "Open Folder", "title": "ASSETS", "icon": "folder", "color": "#37b7ff" },
+    null
+  ]
+}

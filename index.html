@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Configure keys, RGB colors, shortcuts and actions for the TreasLin VSDinside N1."
+    />
+    <title>N1 Stream Controller Studio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <nav class="rail" aria-label="Primary navigation">
+        <button class="brand-mark" aria-label="N1 Stream Controller Studio home">
+          <span>N</span><span>1</span>
+        </button>
+        <div class="rail-links">
+          <button class="rail-button active" data-page="deck" aria-label="Deck layout" title="Deck layout">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="4" y="4" width="6" height="6" rx="1.5"></rect>
+              <rect x="14" y="4" width="6" height="6" rx="1.5"></rect>
+              <rect x="4" y="14" width="6" height="6" rx="1.5"></rect>
+              <rect x="14" y="14" width="6" height="6" rx="1.5"></rect>
+            </svg>
+          </button>
+          <button class="rail-button" data-page="profiles" aria-label="Profiles" title="Profiles">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 8.5 12 4l7 4.5-7 4.5-7-4.5Z"></path>
+              <path d="m5 12.5 7 4.5 7-4.5"></path>
+              <path d="m5 16.5 7 4.5 7-4.5"></path>
+            </svg>
+          </button>
+          <button class="rail-button" data-page="plugins" aria-label="Plugins" title="Plugins">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M9 3v4M15 3v4M7 7h10v4a5 5 0 0 1-5 5v0a5 5 0 0 1-5-5V7Z"></path>
+              <path d="M12 16v5"></path>
+            </svg>
+          </button>
+        </div>
+        <div class="rail-bottom">
+          <button class="rail-button" id="themeToggle" aria-label="Toggle ambient lighting" title="Toggle ambient lighting">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4"></path>
+              <circle cx="12" cy="12" r="4"></circle>
+            </svg>
+          </button>
+          <button class="avatar" aria-label="User settings" title="User settings">LK</button>
+        </div>
+      </nav>
+
+      <div class="app-content">
+        <header class="topbar">
+          <div class="product">
+            <div>
+              <p class="eyebrow">N1 / LINUX</p>
+              <h1>N1 Stream Controller Studio <span>β</span></h1>
+            </div>
+          </div>
+
+          <div class="top-actions">
+            <button class="device-pill" id="deviceButton" type="button">
+              <span class="status-dot"></span>
+              <span>
+                <strong id="deviceName">VSDinside N1</strong>
+                <small id="deviceStatus">USB connected</small>
+              </span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>
+            </button>
+            <div class="profile-switcher">
+              <span>PROFILE</span>
+              <select id="profileSelect" aria-label="Active profile">
+                <option value="streaming">Live Stream</option>
+                <option value="editing">Video Edit</option>
+                <option value="desktop">Daily Desk</option>
+              </select>
+            </div>
+            <div class="history-actions" aria-label="Change history">
+              <button id="undoButton" title="Undo (Ctrl+Z)" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7-5 5 5 5"></path><path d="M5 12h8a6 6 0 0 1 6 6"></path></svg>
+              </button>
+              <button id="redoButton" title="Redo (Ctrl+Shift+Z)" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 5 5-5 5"></path><path d="M19 12h-8a6 6 0 0 0-6 6"></path></svg>
+              </button>
+            </div>
+            <button class="sync-button" id="syncButton">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7h-9"></path><path d="m17 4 3 3-3 3"></path><path d="M4 17h9"></path><path d="m7 20-3-3 3-3"></path></svg>
+              <span>Sync to deck</span>
+            </button>
+          </div>
+        </header>
+
+        <main class="workspace">
+          <aside class="library-panel panel">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker">BUILD</p>
+                <h2>Actions</h2>
+              </div>
+              <button class="icon-button" id="newActionButton" title="Create custom action" aria-label="Create custom action">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+              </button>
+            </div>
+            <label class="search-box">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-4-4"></path></svg>
+              <input id="actionSearch" type="search" placeholder="Search actions…" autocomplete="off" />
+              <kbd>/</kbd>
+            </label>
+            <div class="category-tabs" role="tablist">
+              <button class="active" data-category="all" role="tab">All</button>
+              <button data-category="system" role="tab">System</button>
+              <button data-category="stream" role="tab">Stream</button>
+            </div>
+            <div class="action-groups" id="actionGroups"></div>
+            <p class="drag-hint">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h8M8 12h8M8 19h8"></path></svg>
+              Drag any action onto a key
+            </p>
+          </aside>
+
+          <section class="stage" aria-label="Device editor">
+            <div class="stage-toolbar">
+              <div>
+                <p class="section-kicker">LAYOUT 01</p>
+                <div class="layout-title-row">
+                  <h2 id="layoutTitle">Live Stream</h2>
+                  <button class="name-edit" title="Rename layout" aria-label="Rename layout">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6 4 4"></path><path d="M4 20h4l11-11a2.8 2.8 0 0 0-4-4L4 16v4Z"></path></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="stage-tools">
+                <div class="brightness-control">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.5"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"></path></svg>
+                  <input id="brightness" type="range" min="20" max="100" value="86" aria-label="Key brightness" />
+                  <span id="brightnessValue">86%</span>
+                </div>
+                <button class="outline-button" id="identifyButton">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v4M12 17v4M3 12h4M17 12h4"></path><circle cx="12" cy="12" r="4"></circle></svg>
+                  Identify
+                </button>
+              </div>
+            </div>
+
+            <div class="device-zone">
+              <div class="device-aura"></div>
+              <div class="device" id="device">
+                <div class="device-surface">
+                  <div class="device-top-controls">
+                    <div class="aux-control">
+                      <button class="side-key" data-control="cancel" title="Cancel / back" aria-label="Cancel or go back"></button>
+                      <span>×</span>
+                    </div>
+                    <div class="aux-control">
+                      <button class="side-key" data-control="mode" title="Mode switch" aria-label="Switch mode"></button>
+                      <span>÷</span>
+                    </div>
+                    <div class="dial-wrap">
+                      <button class="dial" id="dial" aria-label="Rotary dial" title="Rotary dial">
+                        <span class="dial-notch"></span>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="device-status-strip" aria-label="Device status strip">
+                    <span style="--strip-color:#f2592f" title="Current profile">
+                      <svg viewBox="0 0 24 24"><path d="M7 4h10v16H7zM9.5 8h5M9.5 12h3"></path><circle cx="16.5" cy="16.5" r="2.5"></circle></svg>
+                    </span>
+                    <span style="--strip-color:#2879ed" title="Page navigation">
+                      <svg viewBox="0 0 24 24"><path d="m9 8-4 4 4 4M15 8l4 4-4 4"></path><path d="M11.5 7.5h1v9h-1z"></path></svg>
+                    </span>
+                    <span style="--strip-color:#e5a900" title="Display brightness">
+                      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.5"></circle><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4"></path></svg>
+                    </span>
+                  </div>
+                  <div class="key-grid" id="keyGrid"></div>
+                  <div class="device-logo" aria-hidden="true">
+                    <strong>VSD</strong>
+                    <span>inside</span>
+                  </div>
+                </div>
+                <div class="device-edge"></div>
+              </div>
+              <div class="device-meta">
+                <span><i></i> LIVE PREVIEW</span>
+                <span>15 LCD KEYS · 2 BUTTONS · 1 DIAL</span>
+              </div>
+            </div>
+
+            <div class="page-dots" aria-label="Device pages">
+              <button class="active" aria-label="Page 1"></button>
+              <button aria-label="Page 2"></button>
+              <button aria-label="Add page">
+                <svg viewBox="0 0 24 24"><path d="M12 7v10M7 12h10"></path></svg>
+              </button>
+            </div>
+          </section>
+
+          <aside class="inspector-panel panel">
+            <div class="panel-heading inspector-header">
+              <div>
+                <p class="section-kicker">INSPECTOR</p>
+                <h2>Key <span id="selectedKeyNumber">01</span></h2>
+              </div>
+              <button class="icon-button danger" id="clearKeyButton" title="Clear key" aria-label="Clear selected key">
+                <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13"></path><path d="M10 11v5M14 11v5"></path></svg>
+              </button>
+            </div>
+
+            <div class="inspector-preview">
+              <div class="mini-key" id="miniKey"></div>
+              <div>
+                <span>SELECTED KEY</span>
+                <strong id="previewActionName">Switch Scene</strong>
+                <small id="previewActionType">OBS Studio</small>
+              </div>
+              <button id="testActionButton" class="test-button" title="Test action">
+                <svg viewBox="0 0 24 24"><path d="m8 5 11 7-11 7V5Z"></path></svg>
+              </button>
+            </div>
+
+            <div class="form-section">
+              <label for="keyTitle">Label</label>
+              <div class="text-field">
+                <input id="keyTitle" type="text" maxlength="18" />
+                <span id="titleCount">0/18</span>
+              </div>
+            </div>
+
+            <div class="form-section">
+              <div class="label-row">
+                <label>Key color</label>
+                <button id="autoColorButton">Auto</button>
+              </div>
+              <div class="color-row" id="colorRow">
+                <button data-color="#ef476f" style="--swatch:#ef476f" aria-label="Coral red"></button>
+                <button data-color="#ff9f1c" style="--swatch:#ff9f1c" aria-label="Amber"></button>
+                <button data-color="#e8ff58" style="--swatch:#e8ff58" aria-label="Acid yellow"></button>
+                <button data-color="#38d996" style="--swatch:#38d996" aria-label="Green"></button>
+                <button data-color="#37b7ff" style="--swatch:#37b7ff" aria-label="Blue"></button>
+                <button data-color="#a78bfa" style="--swatch:#a78bfa" aria-label="Violet"></button>
+                <label class="custom-color" title="Custom color">
+                  <input id="customColor" type="color" value="#37b7ff" />
+                  <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></svg>
+                </label>
+              </div>
+            </div>
+
+            <div class="form-section">
+              <div class="label-row">
+                <label>Assigned action</label>
+                <span class="active-tag">ACTIVE</span>
+              </div>
+              <button class="action-card" id="assignedAction">
+                <span class="action-card-icon" id="assignedActionIcon"></span>
+                <span>
+                  <strong id="assignedActionName">Switch Scene</strong>
+                  <small id="assignedActionDescription">Scene: Starting Soon</small>
+                </span>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>
+              </button>
+            </div>
+
+            <div class="form-section action-config">
+              <label for="actionTarget" id="targetLabel">Target scene</label>
+              <div class="select-field">
+                <select id="actionTarget">
+                  <option>Starting Soon</option>
+                  <option>Main Camera</option>
+                  <option>Game Capture</option>
+                  <option>Be Right Back</option>
+                </select>
+                <input id="actionValue" type="text" spellcheck="false" hidden />
+                <svg viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"></path></svg>
+              </div>
+              <label class="switch-row">
+                <span>
+                  <strong>Run in background</strong>
+                  <small>Keep focus on your current app</small>
+                </span>
+                <input id="backgroundToggle" type="checkbox" checked />
+                <i></i>
+              </label>
+            </div>
+
+            <button class="duplicate-button" id="duplicateButton">
+              <svg viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"></rect><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path></svg>
+              Duplicate to another key
+            </button>
+          </aside>
+        </main>
+
+        <footer class="statusbar">
+          <span><i class="green"></i> Device ready</span>
+          <span id="usbIdentity">USB 5548:1002</span>
+          <span>2 HID interfaces</span>
+          <span class="status-spacer"></span>
+          <span id="lastSaved">Local changes saved</span>
+          <span class="key-hint"><kbd>Ctrl</kbd><kbd>S</kbd> Sync</span>
+        </footer>
+      </div>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite">
+      <span class="toast-icon">
+        <svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"></path></svg>
+      </span>
+      <span>
+        <strong id="toastTitle">Synced to N1</strong>
+        <small id="toastMessage">Your layout is live on the device.</small>
+      </span>
+    </div>
+
+    <div class="dialog-backdrop" id="customActionDialog" aria-hidden="true">
+      <form class="dialog" id="customActionForm">
+        <button class="dialog-close" type="button" aria-label="Close dialog">
+          <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"></path></svg>
+        </button>
+        <p class="section-kicker">CUSTOM ACTION</p>
+        <h2>Create a shell command</h2>
+        <p>Run a trusted local command when the selected key is pressed.</p>
+        <label>
+          Action name
+          <input id="customActionName" required maxlength="18" placeholder="Open project" />
+        </label>
+        <label>
+          Shell command
+          <input id="customActionCommand" required placeholder="code ~/Development/project" />
+        </label>
+        <button class="sync-button dialog-submit" type="submit">Create & assign</button>
+      </form>
+    </div>
+
+    <input id="iconUpload" type="file" accept="image/*" hidden />
+    <script src="app.js"></script>
+  </body>
+</html>

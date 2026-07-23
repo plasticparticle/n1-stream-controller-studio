@@ -1,0 +1,1 @@
+streamdock @ git+https://github.com/MiraboxSpace/StreamDock-Device-SDK.git@df53672a0c484bf6e679728a7a529f80df3cbd0d#subdirectory=Python-SDK
