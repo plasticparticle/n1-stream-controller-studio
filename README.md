@@ -1,5 +1,12 @@
 # N1 Stream Controller Studio
 
+## ⚠️ EARLY ALPHA — DO NOT USE ⚠️
+
+> [!CAUTION]
+> **This software is currently EARLY ALPHA and is unsafe to use.**
+> Do not use it with your hardware or rely on it for production workflows.
+> **Wait for the BETA release before using this software.**
+
 A Linux-first configuration UI and hardware service for the TreasLin VSDinside N1
 stream controller.
 
