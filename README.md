@@ -12,18 +12,41 @@ stream controller.
 
 ![N1 Stream Controller Studio interface](docs/images/n1-stream-controller-studio.png)
 
-## First-time setup
+## Native architecture
 
-Install the native Linux build dependencies:
+Studio is a Tauri 2 desktop application. Its HTML, CSS, and JavaScript interface is
+bundled into the application and loaded by the system webview. It communicates with
+the Rust core through in-process Tauri commands and events—there is no local web
+server and no listening TCP port.
+
+```text
+HTML/CSS/JavaScript interface
+          ↕ Tauri IPC
+Rust desktop core and tray
+          ↕ stdin/stdout
+Bundled N1 hardware sidecar
+          ↕ USB/HID
+      VSDinside N1
+```
+
+Closing the window hides it while the controller remains active. Left-click the N1
+tray icon to reopen Studio; right-click it for **Open Studio** and **Quit**.
+
+## Build and run from source
+
+The current build targets x86_64 Linux and has been tested on Linux Mint 22.3
+(Ubuntu 24.04 base).
+
+Install Node.js, npm, Python, and the native Linux build dependencies:
 
 ```bash
 sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
   libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf \
-  python3-venv git
+  nodejs npm python3 python3-venv git
 ```
 
-Install [Rust](https://rustup.rs), then install the build-time JavaScript tooling and
-the pinned vendor SDK:
+Install [Rust](https://rustup.rs), then install the JavaScript tooling and pinned
+vendor SDK:
 
 ```bash
 npm install
@@ -40,36 +63,23 @@ Start the native application:
 npm run dev
 ```
 
-The first native build packages the Python hardware bridge into a self-contained
-sidecar. Node.js, Python, and `.venv` are build-time requirements only; the packaged
-application does not require them at runtime.
+The first run builds the Rust application and packages the Python hardware bridge
+into a self-contained sidecar.
 
-## Native desktop and tray
-
-Studio is a Tauri 2 desktop application. Its existing HTML, CSS, and JavaScript
-interface communicates with a Rust core through in-process Tauri commands and events.
-It does not start an HTTP server or listen on a localhost port.
-
-```text
-HTML/CSS/JavaScript interface
-          ↕ Tauri IPC
-Rust desktop core and tray
-          ↕ stdin/stdout
-Bundled N1 hardware sidecar
-          ↕ USB/HID
-      VSDinside N1
-```
-
-Closing the window hides it while the controller remains active. Left-click the N1
-tray icon to reopen Studio; right-click it for **Open Studio** and **Quit**.
-
-Build a Debian package with:
+## Build a Debian package
 
 ```bash
 npm run build
 ```
 
-Build artifacts are written below `src-tauri/target/release/bundle/`.
+The package is written below `src-tauri/target/release/bundle/deb/` and includes the
+native application, bundled frontend, and self-contained hardware sidecar. Node.js,
+Rust, Python, and `.venv` are build-time requirements only; they are not required to
+run the installed package.
+
+The host still needs the N1 USB permission rule. When building from this repository,
+install or update it with `npm run setup:udev`, then unplug and reconnect the
+controller.
 
 ## Custom key icons
 
@@ -108,7 +118,7 @@ again after it is reconnected. Restarting Studio is not required.
 ```bash
 npm run dev            # Start the native Tauri application
 npm run build          # Build the Debian package
-npm run check          # JavaScript, Python, shell, and Rust formatting checks
+npm run check          # Run formatting, syntax, and native unit-test checks
 npm run driver:probe   # Open the N1 and report driver status
 npm run setup:driver   # Install SDK dependencies and udev permissions
 npm run setup:udev     # Install only the USB permission rule
