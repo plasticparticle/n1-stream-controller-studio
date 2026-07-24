@@ -93,6 +93,14 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7h-9"></path><path d="m17 4 3 3-3 3"></path><path d="M4 17h9"></path><path d="m7 20-3-3 3-3"></path></svg>
               <span>Sync to deck</span>
             </button>
+            <div class="window-controls" aria-label="Window controls">
+              <button id="windowMinimize" type="button" aria-label="Minimize window" title="Minimize">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16h12"></path></svg>
+              </button>
+              <button class="window-close" id="windowClose" type="button" aria-label="Close window to tray" title="Close to tray">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"></path></svg>
+              </button>
+            </div>
           </div>
         </header>
 
@@ -192,13 +200,23 @@
               </div>
             </div>
 
-            <div class="page-dots" aria-label="Device pages">
-              <button class="active" aria-label="Page 1"></button>
-              <button aria-label="Page 2"></button>
-              <button aria-label="Add page">
+            <nav class="page-control" aria-label="Device pages">
+              <span class="page-control-label">PAGES</span>
+              <div class="page-tabs" role="tablist" aria-label="Choose a device page">
+                <button class="page-tab active" type="button" role="tab" aria-selected="true" data-page-index="0">
+                  <span>01</span>
+                  <small>LIVE</small>
+                </button>
+                <button class="page-tab" type="button" role="tab" aria-selected="false" data-page-index="1">
+                  <span>02</span>
+                  <small>PAGE</small>
+                </button>
+              </div>
+              <button class="page-add" type="button" data-page-action="add" aria-label="Add a new device page">
                 <svg viewBox="0 0 24 24"><path d="M12 7v10M7 12h10"></path></svg>
+                <span>NEW</span>
               </button>
-            </div>
+            </nav>
           </section>
 
           <aside class="inspector-panel panel">

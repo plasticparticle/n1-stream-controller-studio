@@ -162,6 +162,7 @@ svg {
   border-bottom: 1px solid var(--line);
   background: rgba(10,13,15,.86);
   backdrop-filter: blur(16px);
+  user-select: none;
   z-index: 4;
 }
 
@@ -331,6 +332,53 @@ svg {
 
 .sync-button svg {
   width: 17px;
+}
+
+.window-controls {
+  height: 46px;
+  display: flex;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #121719;
+}
+
+.window-controls button {
+  width: 38px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #758085;
+  display: grid;
+  place-items: center;
+  transition:
+    color .16s ease,
+    background .16s ease;
+}
+
+.window-controls button + button {
+  border-left: 1px solid var(--line);
+}
+
+.window-controls button:hover {
+  color: var(--text);
+  background: #1b2226;
+}
+
+.window-controls .window-close:hover {
+  color: #fff;
+  background: var(--danger);
+}
+
+.window-controls button:focus-visible {
+  position: relative;
+  outline: 2px solid var(--cyan);
+  outline-offset: -3px;
+}
+
+.window-controls svg {
+  width: 15px;
 }
 
 .workspace {
@@ -583,7 +631,7 @@ kbd {
 
 .stage-toolbar,
 .device-zone,
-.page-dots {
+.page-control {
   position: relative;
   z-index: 1;
 }
@@ -1039,40 +1087,115 @@ kbd {
   background: var(--green);
 }
 
-.page-dots {
+.page-control {
   position: absolute;
   left: 50%;
-  bottom: 12px;
+  bottom: 14px;
   transform: translateX(-50%);
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
+  height: 44px;
+  padding: 5px;
+  border: 1px solid #2c3539;
+  border-radius: 11px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.035), transparent 42%),
+    #0c1012;
+  box-shadow:
+    0 10px 28px rgba(0,0,0,.34),
+    inset 0 1px rgba(255,255,255,.035);
 }
 
-.page-dots button {
-  width: 6px;
-  height: 6px;
-  padding: 0;
+.page-control-label {
+  padding: 0 5px 0 7px;
+  color: #566166;
+  font: 600 7px "DM Mono", monospace;
+  letter-spacing: .14em;
+}
+
+.page-tabs {
+  display: flex;
+  align-self: stretch;
+  gap: 3px;
+  padding: 2px;
+  border-radius: 7px;
+  background: #070a0c;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.04);
+}
+
+.page-tab {
+  min-width: 62px;
+  height: 30px;
+  padding: 0 10px;
   border: 0;
-  border-radius: 50%;
-  background: #333c40;
+  border-radius: 6px;
+  background: transparent;
+  color: #687378;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  transition:
+    color .16s ease,
+    background .16s ease,
+    box-shadow .16s ease;
 }
 
-.page-dots button.active {
-  width: 17px;
-  border-radius: 4px;
+.page-tab > span {
+  font: 600 11px "DM Mono", monospace;
+  letter-spacing: -.02em;
+}
+
+.page-tab small {
+  font: 700 7px "Manrope", sans-serif;
+  letter-spacing: .08em;
+}
+
+.page-tab:hover {
+  color: #c5ccca;
+  background: #151b1e;
+}
+
+.page-tab.active {
+  color: #111508;
   background: var(--acid);
+  box-shadow: 0 0 16px rgba(217,250,68,.14);
 }
 
-.page-dots button:last-child {
-  width: 17px;
-  height: 17px;
-  background: #171d20;
-  border: 1px solid #30383c;
+.page-tab:focus-visible,
+.page-add:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
 }
 
-.page-dots svg {
-  width: 10px;
+.page-add {
+  height: 32px;
+  padding: 0 10px 0 8px;
+  border: 1px solid #303a3e;
+  border-radius: 7px;
+  background: #151b1e;
+  color: #9da7a9;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font: 700 7px "DM Mono", monospace;
+  letter-spacing: .08em;
+  transition:
+    color .16s ease,
+    border-color .16s ease,
+    background .16s ease;
+}
+
+.page-add:hover {
+  color: var(--acid);
+  border-color: #637029;
+  background: #1a2119;
+}
+
+.page-add svg {
+  width: 13px;
+  height: 13px;
 }
 
 .inspector-panel {

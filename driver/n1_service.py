@@ -509,11 +509,31 @@ def _set_brightness_once(payload: dict[str, Any]) -> dict[str, Any]:
         device = connect()
         require_writable(device)
         device.set_brightness(value)
+        device.refresh()
     return {"brightness": value}
 
 
 def set_brightness(payload: dict[str, Any]) -> dict[str, Any]:
     return run_with_reconnect(lambda: _set_brightness_once(payload))
+
+
+def _identify_once(payload: dict[str, Any]) -> dict[str, Any]:
+    value = max(0, min(100, int(payload.get("brightness", 86))))
+    with _device_lock:
+        device = connect()
+        require_writable(device)
+        for _ in range(2):
+            device.set_brightness(0)
+            device.refresh()
+            time.sleep(0.18)
+            device.set_brightness(value)
+            device.refresh()
+            time.sleep(0.18)
+    return {"brightness": value, "flashes": 2}
+
+
+def identify(payload: dict[str, Any]) -> dict[str, Any]:
+    return run_with_reconnect(lambda: _identify_once(payload))
 
 
 def handle_command(message: dict[str, Any]) -> None:
@@ -533,6 +553,8 @@ def handle_command(message: dict[str, Any]) -> None:
             response(request_id, True, **sync_layout(message.get("payload") or {}))
         elif command == "brightness":
             response(request_id, True, **set_brightness(message.get("payload") or {}))
+        elif command == "identify":
+            response(request_id, True, **identify(message.get("payload") or {}))
         elif command == "key_state":
             response(request_id, True, **set_key_state(message.get("payload") or {}))
         elif command == "shutdown":

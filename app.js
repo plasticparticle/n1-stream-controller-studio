@@ -23,6 +23,18 @@ const backend = {
   setBrightness(brightness) {
     return this.invoke("set_brightness", { brightness });
   },
+  identify(brightness) {
+    return this.invoke("identify_device", { brightness });
+  },
+  minimizeWindow() {
+    return this.invoke("minimize_window");
+  },
+  closeWindow() {
+    return this.invoke("close_window");
+  },
+  startWindowDrag() {
+    return this.invoke("start_window_drag");
+  },
   testAction(key, action) {
     return this.invoke("test_action", { key, action });
   },
@@ -632,12 +644,26 @@ document.querySelector("#actionValue").addEventListener("change", (event) => {
   updateKey(usesShellCommand ? { target: value, command: value, description: value } : { target: value, description: value });
 });
 
-document.querySelector("#identifyButton").addEventListener("click", () => {
+document.querySelector("#identifyButton").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
   const device = document.querySelector("#device");
   device.classList.remove("identifying");
   void device.offsetWidth;
   device.classList.add("identifying");
-  showToast("Device identified", "The N1 keys flashed twice.");
+  button.disabled = true;
+  try {
+    const result = await backend.identify(Number(brightness.value));
+    if (!result.ok) throw new Error(result.error || "Device identification failed");
+    showToast("Device identified", "The physical N1 keys flashed twice.");
+  } catch (error) {
+    showToast(
+      hardwareTransportReady ? "Device identification failed" : "N1 is offline",
+      error.message || "The N1 driver could not identify the device."
+    );
+    detectDevice();
+  } finally {
+    button.disabled = false;
+  }
 });
 
 document.querySelector("#testActionButton").addEventListener("click", async () => {
@@ -701,6 +727,26 @@ redoButton.addEventListener("click", () => {
 });
 
 document.querySelector("#syncButton").addEventListener("click", syncDeck);
+document.querySelector(".topbar").addEventListener("mousedown", (event) => {
+  if (event.button !== 0 || event.target.closest("button, input, select, a")) return;
+  backend.startWindowDrag().catch((error) => {
+    showToast("Could not move window", error.message);
+  });
+});
+document.querySelector("#windowMinimize").addEventListener("click", async () => {
+  try {
+    await backend.minimizeWindow();
+  } catch (error) {
+    showToast("Could not minimize", error.message);
+  }
+});
+document.querySelector("#windowClose").addEventListener("click", async () => {
+  try {
+    await backend.closeWindow();
+  } catch (error) {
+    showToast("Could not close", error.message);
+  }
+});
 document.querySelector("#themeToggle").addEventListener("click", () => {
   document.body.classList.toggle("ambient-off");
 });
@@ -714,15 +760,21 @@ document.querySelectorAll(".rail-button[data-page]").forEach((button) => {
   });
 });
 
-document.querySelectorAll(".page-dots button").forEach((button, index) => {
-  button.addEventListener("click", () => {
-    if (index === 2) {
-      showToast("New page created", "Page 3 is ready for actions.");
-      return;
-    }
-    document.querySelectorAll(".page-dots button").forEach((dot, dotIndex) => dot.classList.toggle("active", dotIndex === index));
-    showToast(`Page ${index + 1}`, "Switched the device preview.");
+document.querySelector(".page-control").addEventListener("click", (event) => {
+  const button = event.target.closest("button");
+  if (!button) return;
+  if (button.dataset.pageAction === "add") {
+    showToast("New page created", "Page 3 is ready for actions.");
+    return;
+  }
+  const pageIndex = Number(button.dataset.pageIndex);
+  if (!Number.isInteger(pageIndex)) return;
+  document.querySelectorAll(".page-tab").forEach((tab) => {
+    const isActive = Number(tab.dataset.pageIndex) === pageIndex;
+    tab.classList.toggle("active", isActive);
+    tab.setAttribute("aria-selected", String(isActive));
   });
+  showToast(`Page ${pageIndex + 1}`, "Switched the device preview.");
 });
 
 document.querySelectorAll(".side-key").forEach((button) => {

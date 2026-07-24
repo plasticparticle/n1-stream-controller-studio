@@ -419,6 +419,21 @@ impl AppCore {
         Ok(json!({"ok": true, "brightness": brightness}))
     }
 
+    fn identify(self: &Arc<Self>, brightness: i64) -> Result<Value, String> {
+        let brightness = brightness.clamp(0, 100);
+        let result = self.driver.request(
+            self.clone(),
+            "identify",
+            json!({"brightness": brightness}),
+            Duration::from_secs(10),
+        )?;
+        Ok(json!({
+            "ok": true,
+            "brightness": brightness,
+            "flashes": result.get("flashes").and_then(Value::as_u64).unwrap_or(2)
+        }))
+    }
+
     fn store_asset(&self, payload: Value) -> Result<Value, String> {
         let data_url = payload
             .get("dataUrl")
@@ -871,6 +886,30 @@ fn load_config(state: State<'_, AppState>) -> Value {
 }
 
 #[tauri::command]
+fn minimize_window(app: AppHandle) -> Result<(), String> {
+    app.get_webview_window("main")
+        .ok_or_else(|| "Main window is unavailable".to_string())?
+        .minimize()
+        .map_err(error_text)
+}
+
+#[tauri::command]
+fn close_window(app: AppHandle) -> Result<(), String> {
+    app.get_webview_window("main")
+        .ok_or_else(|| "Main window is unavailable".to_string())?
+        .hide()
+        .map_err(error_text)
+}
+
+#[tauri::command]
+fn start_window_drag(app: AppHandle) -> Result<(), String> {
+    app.get_webview_window("main")
+        .ok_or_else(|| "Main window is unavailable".to_string())?
+        .start_dragging()
+        .map_err(error_text)
+}
+
+#[tauri::command]
 async fn sync_deck(state: State<'_, AppState>, payload: Value) -> Result<Value, String> {
     let core = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || core.sync(payload))
@@ -887,6 +926,14 @@ fn store_asset(state: State<'_, AppState>, payload: Value) -> Result<Value, Stri
 async fn set_brightness(state: State<'_, AppState>, brightness: i64) -> Result<Value, String> {
     let core = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || core.set_brightness(brightness))
+        .await
+        .map_err(error_text)?
+}
+
+#[tauri::command]
+async fn identify_device(state: State<'_, AppState>, brightness: i64) -> Result<Value, String> {
+    let core = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || core.identify(brightness))
         .await
         .map_err(error_text)?
 }
@@ -949,9 +996,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             device_status,
             load_config,
+            minimize_window,
+            close_window,
+            start_window_drag,
             sync_deck,
             store_asset,
             set_brightness,
+            identify_device,
             test_action,
             resolve_asset
         ])
