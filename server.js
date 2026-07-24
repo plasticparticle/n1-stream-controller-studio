@@ -198,6 +198,8 @@ class DriverBridge {
     this.pending = new Map();
     this.stdoutBuffer = "";
     this.state = { status: "stopped", error: "" };
+    this.restartTimer = null;
+    this.restartAttempts = 0;
   }
 
   publicState() {
@@ -206,17 +208,23 @@ class DriverBridge {
 
   setState(status, error = "") {
     this.state = { status, error };
+    if (status === "ready") this.restartAttempts = 0;
     broadcast({ event: "driver", ...this.publicState() });
   }
 
   start() {
     if (this.process) return;
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
     if (!fs.existsSync(pythonPath)) {
       this.setState("not_installed", "Run npm run setup:driver");
       return;
     }
 
     this.setState("starting");
+    this.stdoutBuffer = "";
     this.process = spawn(pythonPath, [driverScript], {
       cwd: root,
       stdio: ["pipe", "pipe", "pipe"],
@@ -233,17 +241,44 @@ class DriverBridge {
         broadcast({ event: "driver_log", level: "error", message });
       }
     });
+    this.process.stdin.on("error", (error) => {
+      console.error(`[N1 driver stdin] ${error.message}`);
+    });
     this.process.on("error", (error) => this.setState("error", error.message));
     this.process.on("exit", (code, signal) => {
       const error = signal ? `Driver stopped by ${signal}` : `Driver exited with code ${code}`;
+      const intentionallyStopped = this.state.status === "stopping";
       this.process = null;
       this.rejectPending(new Error(error));
-      if (this.state.status !== "stopping") this.setState("stopped", error);
+      if (intentionallyStopped) {
+        this.setState("stopped");
+      } else {
+        this.setState("reconnecting", error);
+        this.scheduleRestart();
+      }
     });
   }
 
+  scheduleRestart() {
+    if (this.restartTimer) return;
+    const delay = Math.min(1000 * (2 ** this.restartAttempts), 10_000);
+    this.restartAttempts += 1;
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      this.start();
+    }, delay);
+    this.restartTimer.unref();
+  }
+
   stop() {
-    if (!this.process) return;
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
+    if (!this.process) {
+      this.setState("stopped");
+      return;
+    }
     this.setState("stopping");
     this.process.kill("SIGTERM");
   }
@@ -290,6 +325,7 @@ class DriverBridge {
   }
 
   request(command, payload = {}, timeoutMs = 45_000) {
+    if (!this.process) this.start();
     if (!this.process || !this.process.stdin.writable) {
       return Promise.reject(new Error(this.state.error || "N1 driver is not running"));
     }

@@ -404,14 +404,18 @@ async function detectDevice() {
     document.querySelector("#deviceName").textContent = "VSDinside N1";
     const driverStatus = device.driver?.status;
     document.querySelector("#deviceStatus").textContent = !deviceDetected
-      ? "Not detected"
+      ? driverStatus === "reconnecting" || driverStatus === "disconnected"
+        ? "Waiting for USB reconnect…"
+        : "Not detected"
       : hardwareTransportReady
         ? `Driver ready · ${device.vendorId}:${device.productId}`
         : driverStatus === "not_installed"
           ? "Driver setup required"
           : driverStatus === "error"
             ? "USB permission required"
-            : "Driver starting…";
+            : driverStatus === "reconnecting" || driverStatus === "disconnected"
+              ? "Reconnecting automatically…"
+              : "Driver starting…";
     document.querySelector("#usbIdentity").textContent = `USB ${device.vendorId}:${device.productId}`;
     document.querySelector(".statusbar > span:first-child").innerHTML = deviceDetected
       ? hardwareTransportReady
@@ -731,7 +735,7 @@ document.querySelector("#deviceButton").addEventListener("click", async () => {
     hardwareTransportReady ? "N1 driver ready" : deviceDetected ? "N1 driver unavailable" : "N1 not detected",
     hardwareTransportReady
       ? "Linux HID transport is connected."
-      : "Run npm run setup:driver, reconnect the deck, and restart N1 Stream Controller Studio."
+      : "Reconnect the USB cable; Studio will reopen the deck automatically."
   );
 });
 

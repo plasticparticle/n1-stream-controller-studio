@@ -100,6 +100,10 @@ deck** after editing to transfer the current layout and start any animations.
 The **Sync to deck** button performs a real hardware transfer. Failed USB access is
 reported as an error and never presented as a successful sync.
 
+The hardware service monitors the N1 connection continuously. If the USB cable is
+removed, Studio releases the stale HID handle and automatically opens the controller
+again after it is reconnected. Restarting the tray application is not required.
+
 ## Commands
 
 ```bash

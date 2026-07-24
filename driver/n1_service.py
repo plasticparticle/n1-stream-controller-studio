@@ -10,6 +10,7 @@ import signal
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -23,9 +24,13 @@ from StreamDock.Transport.LibUSBHIDAPI import LibUSBHIDAPI
 VENDOR_ID = 0x5548
 PRODUCT_ID = 0x1002
 KEY_SIZE = (96, 96)
+USB_SYSFS_ROOT = Path(os.environ.get("STREAMCTRL_USB_SYSFS", "/sys/bus/usb/devices"))
+DEVICE_MONITOR_INTERVAL = 1.0
+RECONNECT_TIMEOUT = 8.0
 
 _stdout_lock = threading.Lock()
 _device_lock = threading.RLock()
+_device_monitor_stop = threading.Event()
 _running = True
 _device: StreamDockN1 | None = None
 
@@ -203,11 +208,11 @@ def apply_key_visual(
         first_frame_path = temp_path / f"key-{index:02d}-state.jpg"
         first_frame_path.write_bytes(frames[0])
         result = device.set_key_image(index, str(first_frame_path))
-        if result not in (None, 0):
+        if result != 0:
             raise RuntimeError(f"Image transfer failed for key {index}: {result}")
         if len(frames) > 1:
             result = device.set_key_gif_stream(frames, delays, index)
-            if result not in (None, 0):
+            if result != 0:
                 raise RuntimeError(f"Animation setup failed for key {index}: {result}")
             return True
         return False
@@ -215,7 +220,7 @@ def apply_key_visual(
     icon_path = temp_path / f"key-{index:02d}-generated.jpg"
     render_key(key).save(icon_path, "JPEG", quality=95, subsampling=0)
     result = device.set_key_image(index, str(icon_path))
-    if result not in (None, 0):
+    if result != 0:
         raise RuntimeError(f"Image transfer failed for key {index}: {result}")
     return False
 
@@ -247,14 +252,35 @@ def on_input(device: StreamDockN1, event: Any) -> None:
     emit(payload)
 
 
+def enumerate_n1_devices() -> list[dict[str, Any]]:
+    return LibUSBHIDAPI().enumerate_devices(VENDOR_ID, PRODUCT_ID)
+
+
+def device_is_present() -> bool:
+    if USB_SYSFS_ROOT.is_dir():
+        try:
+            for device_path in USB_SYSFS_ROOT.iterdir():
+                vendor_path = device_path / "idVendor"
+                product_path = device_path / "idProduct"
+                if not vendor_path.is_file() or not product_path.is_file():
+                    continue
+                vendor_id = vendor_path.read_text(encoding="utf-8").strip().lower()
+                product_id = product_path.read_text(encoding="utf-8").strip().lower()
+                if vendor_id == f"{VENDOR_ID:04x}" and product_id == f"{PRODUCT_ID:04x}":
+                    return True
+            return False
+        except OSError:
+            pass
+    return bool(enumerate_n1_devices())
+
+
 def connect() -> StreamDockN1:
     global _device
     with _device_lock:
         if _device is not None:
             return _device
 
-        enumerator = LibUSBHIDAPI()
-        devices = enumerator.enumerate_devices(VENDOR_ID, PRODUCT_ID)
+        devices = enumerate_n1_devices()
         if not devices:
             raise RuntimeError("N1 USB device 5548:1002 was not found")
 
@@ -262,21 +288,29 @@ def connect() -> StreamDockN1:
         native_info = LibUSBHIDAPI.create_device_info_from_dict(info)
         transport = LibUSBHIDAPI(native_info)
         device = StreamDockN1(transport, info)
-        # Open the HID handle through the base implementation first. The N1 override
-        # switches modes immediately, before this legacy USB identity has the N1
-        # report geometry configured.
-        opened = StreamDock.open(device)
-        if not opened or not device.transport.can_write():
-            raise PermissionError(
-                f"Unable to open {info.get('path', 'N1 HID interface')}; install the udev rule"
-            )
+        try:
+            # Open the HID handle through the base implementation first. The N1 override
+            # switches modes immediately, before this legacy USB identity has the N1
+            # report geometry configured.
+            opened = StreamDock.open(device)
+            if not opened or not device.transport.can_write():
+                raise PermissionError(
+                    f"Unable to open {info.get('path', 'N1 HID interface')}; install the udev rule"
+                )
 
-        # The native transport requires an open handle before set_report_size().
-        # Select the N1 geometry, then enter Dock mode in that order.
-        device.set_device()
-        device.transport.switchMode(2)
-        device.wakeScreen()
-        device.set_key_callback(on_input)
+            # The native transport requires an open handle before set_report_size().
+            # Select the N1 geometry, then enter Dock mode in that order.
+            device.set_device()
+            device.transport.switchMode(2)
+            device.wakeScreen()
+            device.set_key_callback(on_input)
+        except Exception:
+            try:
+                device.close(notify=False)
+            except Exception:
+                pass
+            raise
+
         _device = device
         emit(
             {
@@ -293,16 +327,123 @@ def connect() -> StreamDockN1:
 def close_device() -> None:
     global _device
     with _device_lock:
-        if _device is None:
+        device = _device
+        if device is None:
             return
+        _device = None
         try:
-            _device.close(notify=False)
-        finally:
-            _device = None
+            device.close(notify=False)
+        except Exception as error:
+            emit(
+                {
+                    "event": "log",
+                    "level": "warning",
+                    "message": f"Error while closing disconnected N1: {error}",
+                }
+            )
 
 
-def sync_layout(payload: dict[str, Any]) -> dict[str, Any]:
+def is_transport_failure(error: Exception) -> bool:
+    if isinstance(error, (OSError, PermissionError)):
+        return True
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in (
+            "usb device",
+            "hid interface",
+            "transport",
+            "transfer failed",
+            "animation setup failed",
+            "device was not found",
+        )
+    )
+
+
+def status_for_error(error: Exception) -> str:
+    if isinstance(error, PermissionError):
+        return "error"
+    return "disconnected" if is_transport_failure(error) else "error"
+
+
+def wait_for_connection(timeout: float = RECONNECT_TIMEOUT) -> StreamDockN1:
+    deadline = time.monotonic() + timeout
+    last_error: Exception | None = None
+    while _running and time.monotonic() < deadline:
+        try:
+            return connect()
+        except Exception as error:
+            last_error = error
+            _device_monitor_stop.wait(0.25)
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("N1 reconnection was cancelled")
+
+
+def run_with_reconnect(operation: Any) -> Any:
+    try:
+        return operation()
+    except Exception as error:
+        if not is_transport_failure(error):
+            raise
+        emit({"event": "status", "status": "reconnecting", "error": str(error)})
+        close_device()
+        try:
+            wait_for_connection()
+            return operation()
+        except Exception as reconnect_error:
+            close_device()
+            if isinstance(reconnect_error, PermissionError):
+                raise
+            raise RuntimeError(
+                f"N1 disconnected; automatic reconnection is waiting for USB: {reconnect_error}"
+            ) from reconnect_error
+
+
+def require_writable(device: StreamDockN1) -> None:
+    if not device.transport.can_write():
+        raise RuntimeError("N1 HID transport is not writable")
+
+
+def monitor_device() -> None:
+    last_present: bool | None = None
+    last_error = ""
+    while _running and not _device_monitor_stop.is_set():
+        try:
+            present = device_is_present()
+            if not present:
+                if last_present is not False or _device is not None:
+                    emit(
+                        {
+                            "event": "status",
+                            "status": "disconnected",
+                            "error": "N1 USB device 5548:1002 is disconnected",
+                        }
+                    )
+                    close_device()
+                last_error = ""
+            elif _device is None:
+                try:
+                    connect()
+                    last_error = ""
+                except Exception as error:
+                    message = str(error)
+                    if message != last_error:
+                        status = "error" if isinstance(error, PermissionError) else "reconnecting"
+                        emit({"event": "status", "status": status, "error": message})
+                        last_error = message
+            last_present = present
+        except Exception as error:
+            message = str(error)
+            if message != last_error:
+                emit({"event": "status", "status": "reconnecting", "error": message})
+                last_error = message
+        _device_monitor_stop.wait(DEVICE_MONITOR_INTERVAL)
+
+
+def _sync_layout_once(payload: dict[str, Any]) -> dict[str, Any]:
     device = connect()
+    require_writable(device)
     keys = list(payload.get("keys") or [])[:15]
     brightness = max(0, min(100, int(payload.get("brightness", 86))))
 
@@ -325,7 +466,7 @@ def sync_layout(payload: dict[str, Any]) -> dict[str, Any]:
             icon_path = temp_path / f"status-{status_index}.jpg"
             render_status_icon(status_index).save(icon_path, "JPEG", quality=95, subsampling=0)
             result = device.set_key_image(16 + status_index, str(icon_path))
-            if result not in (None, 0):
+            if result != 0:
                 raise RuntimeError(
                     f"Status-strip transfer failed for key {16 + status_index}: {result}"
                 )
@@ -336,7 +477,11 @@ def sync_layout(payload: dict[str, Any]) -> dict[str, Any]:
     return {"written": written, "animated": animated, "brightness": brightness}
 
 
-def set_key_state(payload: dict[str, Any]) -> dict[str, Any]:
+def sync_layout(payload: dict[str, Any]) -> dict[str, Any]:
+    return run_with_reconnect(lambda: _sync_layout_once(payload))
+
+
+def _set_key_state_once(payload: dict[str, Any]) -> dict[str, Any]:
     index = int(payload.get("key") or 0)
     if index not in range(1, 16):
         raise ValueError("Key state index must be between 1 and 15")
@@ -347,17 +492,28 @@ def set_key_state(payload: dict[str, Any]) -> dict[str, Any]:
 
     with _device_lock, tempfile.TemporaryDirectory(prefix="n1-key-state-") as temp_dir:
         device = connect()
+        require_writable(device)
         animated = apply_key_visual(device, index, key, Path(temp_dir), secondary)
         device.refresh()
         device.start_gif_loop()
     return {"key": index, "secondary": secondary, "animated": animated}
 
 
-def set_brightness(payload: dict[str, Any]) -> dict[str, Any]:
+def set_key_state(payload: dict[str, Any]) -> dict[str, Any]:
+    return run_with_reconnect(lambda: _set_key_state_once(payload))
+
+
+def _set_brightness_once(payload: dict[str, Any]) -> dict[str, Any]:
     value = max(0, min(100, int(payload.get("brightness", 86))))
     with _device_lock:
-        connect().set_brightness(value)
+        device = connect()
+        require_writable(device)
+        device.set_brightness(value)
     return {"brightness": value}
+
+
+def set_brightness(payload: dict[str, Any]) -> dict[str, Any]:
+    return run_with_reconnect(lambda: _set_brightness_once(payload))
 
 
 def handle_command(message: dict[str, Any]) -> None:
@@ -385,13 +541,14 @@ def handle_command(message: dict[str, Any]) -> None:
         else:
             response(request_id, False, error=f"Unknown driver command: {command}")
     except Exception as error:
-        emit({"event": "status", "status": "error", "error": str(error)})
+        emit({"event": "status", "status": status_for_error(error), "error": str(error)})
         response(request_id, False, error=str(error), errorType=type(error).__name__)
 
 
 def shutdown(*_: Any) -> None:
     global _running
     _running = False
+    _device_monitor_stop.set()
     close_device()
 
 
@@ -403,13 +560,16 @@ def main() -> int:
     try:
         connect()
     except Exception as error:
-        emit({"event": "status", "status": "error", "error": str(error)})
+        emit({"event": "status", "status": status_for_error(error), "error": str(error)})
         if "--probe" in sys.argv:
             return 1
 
     if "--probe" in sys.argv:
         close_device()
         return 0
+
+    monitor = threading.Thread(target=monitor_device, name="n1-device-monitor", daemon=True)
+    monitor.start()
 
     while _running:
         line = sys.stdin.readline()
@@ -421,6 +581,7 @@ def main() -> int:
             emit({"event": "log", "level": "error", "message": f"Invalid JSON: {error}"})
 
     shutdown()
+    monitor.join(timeout=2.0)
     return 0
 
 
