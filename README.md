@@ -69,8 +69,18 @@ sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
   nodejs python3 python3-venv git
 ```
 
-Install [Rust](https://rustup.rs), then install the JavaScript tooling and pinned
-vendor SDK:
+> **Rust is required:** Install it from the
+> [official Rust installer page](https://www.rust-lang.org/tools/install) before
+> building, running, or checking Studio from source.
+
+After installing Rust, open a new terminal or load Cargo into the current shell:
+
+```bash
+source "$HOME/.cargo/env"
+cargo --version
+```
+
+Then install the JavaScript tooling and pinned vendor SDK:
 
 ```bash
 npm install
