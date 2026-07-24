@@ -225,15 +225,18 @@ def apply_key_visual(
     return False
 
 
-def render_status_icon(kind: int) -> Image.Image:
+def status_label(kind: int, page_number: int = 1) -> str:
+    return ("N1", f"{page_number:02d}", "☀")[kind]
+
+
+def render_status_icon(kind: int, page_number: int = 1) -> Image.Image:
     colors = ("#f2592f", "#2879ed", "#e5a900")
-    labels = ("N1", "01", "☀")
     image = Image.new("RGB", (80, 80), (4, 5, 7))
     draw = ImageDraw.Draw(image)
     color = rgb(colors[kind])
     draw.rounded_rectangle((9, 9, 71, 71), radius=12, fill=color)
     font = find_font(20, bold=True)
-    label = labels[kind]
+    label = status_label(kind, page_number)
     box = draw.textbbox((0, 0), label, font=font)
     draw.text(((80 - (box[2] - box[0])) / 2, 26), label, font=font, fill="white")
     return image
@@ -446,6 +449,7 @@ def _sync_layout_once(payload: dict[str, Any]) -> dict[str, Any]:
     require_writable(device)
     keys = list(payload.get("keys") or [])[:15]
     brightness = max(0, min(100, int(payload.get("brightness", 86))))
+    page_number = max(1, min(99, int(payload.get("page", 1))))
 
     with _device_lock, tempfile.TemporaryDirectory(prefix="n1-controller-studio-") as temp_dir:
         temp_path = Path(temp_dir)
@@ -464,7 +468,9 @@ def _sync_layout_once(payload: dict[str, Any]) -> dict[str, Any]:
 
         for status_index in range(3):
             icon_path = temp_path / f"status-{status_index}.jpg"
-            render_status_icon(status_index).save(icon_path, "JPEG", quality=95, subsampling=0)
+            render_status_icon(status_index, page_number).save(
+                icon_path, "JPEG", quality=95, subsampling=0
+            )
             result = device.set_key_image(16 + status_index, str(icon_path))
             if result != 0:
                 raise RuntimeError(
@@ -474,7 +480,12 @@ def _sync_layout_once(payload: dict[str, Any]) -> dict[str, Any]:
         device.set_brightness(brightness)
         device.refresh()
         device.start_gif_loop()
-    return {"written": written, "animated": animated, "brightness": brightness}
+    return {
+        "written": written,
+        "animated": animated,
+        "brightness": brightness,
+        "page": page_number,
+    }
 
 
 def sync_layout(payload: dict[str, Any]) -> dict[str, Any]:

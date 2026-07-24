@@ -1130,13 +1130,22 @@ kbd {
   display: flex;
   align-self: stretch;
   gap: 3px;
+  max-width: 210px;
   padding: 2px;
   border-radius: 7px;
   background: #070a0c;
   box-shadow: inset 0 0 0 1px rgba(255,255,255,.04);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.page-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .page-tab {
+  flex: 0 0 auto;
   min-width: 62px;
   height: 30px;
   padding: 0 10px;

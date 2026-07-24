@@ -54,5 +54,12 @@ class BrightnessTests(unittest.TestCase):
         )
 
 
+class StatusDisplayTests(unittest.TestCase):
+    def test_middle_status_display_uses_current_page_number(self):
+        self.assertEqual(n1_service.status_label(0, 7), "N1")
+        self.assertEqual(n1_service.status_label(1, 7), "07")
+        self.assertEqual(n1_service.status_label(2, 7), "☀")
+
+
 if __name__ == "__main__":
     unittest.main()

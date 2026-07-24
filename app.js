@@ -117,6 +117,8 @@ let toastTimer;
 let dialValue = 20;
 let deviceDetected = false;
 let hardwareTransportReady = false;
+let hardwarePageSwitching = false;
+let deckSyncInProgress = false;
 let pendingIconSlot = null;
 const runtimeVisualStates = new Map();
 
@@ -170,34 +172,97 @@ Object.keys(layouts).forEach((profile) => {
 
 const layoutStorageKey = "n1-stream-controller-studio-layouts";
 const legacyLayoutStorageKey = "n1-studio-layouts";
+const pageStorageKey = "n1-stream-controller-studio-pages";
+const pageLayouts = {};
+const currentPageByProfile = Object.fromEntries(
+  Object.keys(layouts).map((profile) => [profile, 0])
+);
 let restoredSavedLayouts = false;
 
 try {
-  const savedLayoutJson =
-    localStorage.getItem(layoutStorageKey) || localStorage.getItem(legacyLayoutStorageKey);
-  const savedLayouts = JSON.parse(savedLayoutJson || "null");
-  if (savedLayouts && typeof savedLayouts === "object") {
+  const savedPageState = JSON.parse(localStorage.getItem(pageStorageKey) || "null");
+  if (savedPageState?.profiles && typeof savedPageState.profiles === "object") {
     Object.keys(layouts).forEach((profile) => {
-      if (Array.isArray(savedLayouts[profile]) && savedLayouts[profile].length === 15) {
-        layouts[profile] = savedLayouts[profile];
+      const savedPages = savedPageState.profiles[profile];
+      if (
+        Array.isArray(savedPages) &&
+        savedPages.length > 0 &&
+        savedPages.every((page) => Array.isArray(page) && page.length === 15)
+      ) {
+        pageLayouts[profile] = savedPages;
+        const savedIndex = Number(savedPageState.current?.[profile]);
+        currentPageByProfile[profile] = Number.isInteger(savedIndex)
+          ? Math.max(0, Math.min(savedIndex, savedPages.length - 1))
+          : 0;
         restoredSavedLayouts = true;
       }
     });
+    if (savedPageState.profile && layouts[savedPageState.profile]) {
+      currentProfile = savedPageState.profile;
+    }
+  } else {
+    const savedLayoutJson =
+      localStorage.getItem(layoutStorageKey) || localStorage.getItem(legacyLayoutStorageKey);
+    const savedLayouts = JSON.parse(savedLayoutJson || "null");
+    if (savedLayouts && typeof savedLayouts === "object") {
+      Object.keys(layouts).forEach((profile) => {
+        if (Array.isArray(savedLayouts[profile]) && savedLayouts[profile].length === 15) {
+          layouts[profile] = savedLayouts[profile];
+          restoredSavedLayouts = true;
+        }
+      });
+    }
   }
 } catch {
   // A malformed local draft should never prevent the editor from loading.
 }
 
-function visualStateKey(profile, index) {
-  return `${profile}:${index}`;
+Object.keys(layouts).forEach((profile) => {
+  if (!pageLayouts[profile]) {
+    pageLayouts[profile] = [layouts[profile], Array(15).fill(null)];
+  }
+});
+
+function activePageIndex(profile = currentProfile) {
+  return currentPageByProfile[profile] || 0;
+}
+
+function activeLayout(profile = currentProfile) {
+  return pageLayouts[profile][activePageIndex(profile)];
+}
+
+function replaceActiveLayout(layout) {
+  pageLayouts[currentProfile][activePageIndex()] = layout;
+}
+
+function persistPages() {
+  try {
+    localStorage.setItem(pageStorageKey, JSON.stringify({
+      version: 1,
+      profile: currentProfile,
+      current: currentPageByProfile,
+      profiles: pageLayouts
+    }));
+  } catch {
+    // Local drafts are a convenience; storage failures must not block editing.
+  }
+}
+
+function visualStateKey(profile, page, index) {
+  return `${profile}:${page}:${index}`;
 }
 
 function setRuntimeVisualState(index, secondary) {
-  runtimeVisualStates.set(visualStateKey(currentProfile, index), Boolean(secondary));
+  runtimeVisualStates.set(
+    visualStateKey(currentProfile, activePageIndex(), index),
+    Boolean(secondary)
+  );
 }
 
 function getRuntimeVisualState(index) {
-  return runtimeVisualStates.get(visualStateKey(currentProfile, index)) || false;
+  return runtimeVisualStates.get(
+    visualStateKey(currentProfile, activePageIndex(), index)
+  ) || false;
 }
 
 function selectedVisual(key, secondary = false) {
@@ -229,9 +294,58 @@ function escapeHtml(value) {
   })[char]);
 }
 
+function renderPageTabs() {
+  const pages = pageLayouts[currentProfile];
+  const currentPage = activePageIndex();
+  const tabs = document.querySelector(".page-tabs");
+  tabs.innerHTML = pages.map((_, index) => {
+    const isActive = index === currentPage;
+    const pageNumber = String(index + 1).padStart(2, "0");
+    return `
+      <button
+        class="page-tab${isActive ? " active" : ""}"
+        type="button"
+        role="tab"
+        aria-selected="${isActive}"
+        aria-controls="keyGrid"
+        tabindex="${isActive ? "0" : "-1"}"
+        data-page-index="${index}"
+      >
+        <span>${pageNumber}</span>
+        <small>${index === 0 ? "LIVE" : "PAGE"}</small>
+      </button>
+    `;
+  }).join("");
+  document.querySelector("#layoutNumber").textContent =
+    `LAYOUT ${String(currentPage + 1).padStart(2, "0")}`;
+  tabs.querySelector(".active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function switchPage(pageIndex, announce = true) {
+  const pages = pageLayouts[currentProfile];
+  if (!Number.isInteger(pageIndex) || !pages[pageIndex]) return;
+  currentPageByProfile[currentProfile] = pageIndex;
+  selectedIndex = 0;
+  duplicateSource = null;
+  history = [];
+  future = [];
+  updateHistoryButtons();
+  renderPageTabs();
+  renderKeys();
+  persistPages();
+  document.querySelector("#lastSaved").textContent =
+    `Page ${pageIndex + 1} selected · sync to apply`;
+  if (announce) {
+    showToast(
+      `Page ${pageIndex + 1}`,
+      "The page layout is now open. Sync to show it on the physical N1."
+    );
+  }
+}
+
 function renderKeys() {
   keyGrid.innerHTML = "";
-  layouts[currentProfile].forEach((key, index) => {
+  activeLayout().forEach((key, index) => {
     const button = document.createElement("button");
     button.className = `deck-key${index === selectedIndex ? " selected" : ""}`;
     button.dataset.index = index;
@@ -290,7 +404,7 @@ function renderActions() {
 }
 
 function updateInspector() {
-  const key = layouts[currentProfile][selectedIndex];
+  const key = activeLayout()[selectedIndex];
   selectedKeyNumber.textContent = String(selectedIndex + 1).padStart(2, "0");
   keyTitle.value = key?.title || "";
   document.querySelector("#titleCount").textContent = `${keyTitle.value.length}/18`;
@@ -368,7 +482,7 @@ function updateIconStateEditor(key) {
 }
 
 function snapshot() {
-  history.push(JSON.stringify(layouts[currentProfile]));
+  history.push(JSON.stringify(activeLayout()));
   if (history.length > 30) history.shift();
   future = [];
   updateHistoryButtons();
@@ -382,8 +496,8 @@ function updateHistoryButtons() {
 function handleKeyClick(index) {
   if (duplicateSource !== null && duplicateSource !== index) {
     snapshot();
-    layouts[currentProfile][index] = layouts[currentProfile][duplicateSource]
-      ? structuredClone(layouts[currentProfile][duplicateSource])
+    activeLayout()[index] = activeLayout()[duplicateSource]
+      ? structuredClone(activeLayout()[duplicateSource])
       : null;
     duplicateSource = null;
     showToast("Key duplicated", `Copied the action to key ${String(index + 1).padStart(2, "0")}.`);
@@ -396,7 +510,7 @@ function assignAction(index, actionId) {
   const action = actionCatalog.find((item) => item.id === actionId);
   if (!action) return;
   snapshot();
-  layouts[currentProfile][index] = {
+  activeLayout()[index] = {
     ...action,
     title: action.name.toUpperCase().slice(0, 18),
     target: action.description,
@@ -418,34 +532,40 @@ function showToast(title, message) {
 }
 
 function updateKey(patch) {
-  if (!layouts[currentProfile][selectedIndex]) return;
+  if (!activeLayout()[selectedIndex]) return;
   snapshot();
-  layouts[currentProfile][selectedIndex] = { ...layouts[currentProfile][selectedIndex], ...patch };
+  activeLayout()[selectedIndex] = { ...activeLayout()[selectedIndex], ...patch };
   renderKeys();
   document.querySelector("#lastSaved").textContent = "Unsynced changes";
 }
 
 async function syncDeck() {
+  if (deckSyncInProgress) return;
+  deckSyncInProgress = true;
   const button = document.querySelector("#syncButton");
   const original = button.innerHTML;
   button.disabled = true;
   button.innerHTML = '<svg viewBox="0 0 24 24" style="animation:spin .8s linear infinite"><path d="M20 12a8 8 0 1 1-2.3-5.7"></path></svg><span>Syncing…</span>';
-  localStorage.setItem(layoutStorageKey, JSON.stringify(layouts));
+  persistPages();
   try {
     const result = await backend.sync({
       profile: currentProfile,
+      page: activePageIndex() + 1,
       brightness: Number(brightness.value),
-      keys: layouts[currentProfile]
+      keys: activeLayout()
     });
     if (!result.ok) throw new Error(result.error || "Hardware sync failed");
     hardwareTransportReady = true;
-    for (let index = 0; index < layouts[currentProfile].length; index += 1) {
+    for (let index = 0; index < activeLayout().length; index += 1) {
       setRuntimeVisualState(index, false);
     }
     renderKeys();
     document.querySelector("#lastSaved").textContent = "Synced just now";
     const animationLabel = result.animated ? ` · ${result.animated} animated` : "";
-    showToast("Synced to N1", `${result.written} key images are live${animationLabel}.`);
+    showToast(
+      `Page ${activePageIndex() + 1} synced to N1`,
+      `${result.written} key images are live${animationLabel}.`
+    );
   } catch (error) {
     document.querySelector("#lastSaved").textContent = "Saved locally · device sync failed";
     showToast(
@@ -454,8 +574,34 @@ async function syncDeck() {
     );
     detectDevice();
   } finally {
+    deckSyncInProgress = false;
     button.disabled = false;
     button.innerHTML = original;
+  }
+}
+
+async function cycleHardwarePage() {
+  if (hardwarePageSwitching || deckSyncInProgress) {
+    showToast("Page switch in progress", "Wait for the current page transfer to finish.");
+    return;
+  }
+  const pages = pageLayouts[currentProfile];
+  if (pages.length < 2) {
+    showToast("Only one page", "Create another page before using the page button.");
+    return;
+  }
+
+  hardwarePageSwitching = true;
+  const nextPage = (activePageIndex() + 1) % pages.length;
+  switchPage(nextPage, false);
+  showToast(
+    `Loading Page ${nextPage + 1}`,
+    "The middle device button is updating all 15 physical keys."
+  );
+  try {
+    await syncDeck();
+  } finally {
+    hardwarePageSwitching = false;
   }
 }
 
@@ -504,7 +650,7 @@ document.querySelectorAll(".category-tabs button").forEach((button) => {
 
 keyTitle.addEventListener("input", () => {
   document.querySelector("#titleCount").textContent = `${keyTitle.value.length}/18`;
-  const key = layouts[currentProfile][selectedIndex];
+  const key = activeLayout()[selectedIndex];
   if (!key) return;
   key.title = keyTitle.value;
   const screenLabel = keyGrid.children[selectedIndex]?.querySelector(".key-label");
@@ -519,19 +665,20 @@ document.querySelectorAll("#colorRow button").forEach((button) => {
 });
 document.querySelector("#customColor").addEventListener("input", (event) => updateKey({ color: event.target.value }));
 document.querySelector("#autoColorButton").addEventListener("click", () => {
-  const key = layouts[currentProfile][selectedIndex];
+  const key = activeLayout()[selectedIndex];
   if (key) updateKey({ color: actionCatalog.find((item) => item.id === key.id)?.color || "#37b7ff" });
 });
 
 document.querySelectorAll("[data-icon-slot]").forEach((button) => {
   button.addEventListener("click", () => {
-    if (!layouts[currentProfile][selectedIndex]) {
+    if (!activeLayout()[selectedIndex]) {
       showToast("Assign an action first", "Icons belong to a configured deck key.");
       return;
     }
     pendingIconSlot = {
       slot: button.dataset.iconSlot,
       profile: currentProfile,
+      page: activePageIndex(),
       index: selectedIndex
     };
     iconUpload.value = "";
@@ -567,11 +714,14 @@ iconUpload.addEventListener("change", async () => {
     const result = await backend.storeAsset({ name: file.name, dataUrl });
     if (!result.ok) throw new Error(result.error || "Icon upload failed");
 
-    const key = layouts[target.profile]?.[target.index];
+    const key = pageLayouts[target.profile]?.[target.page]?.[target.index];
     if (!key) throw new Error("The destination key no longer exists");
-    if (target.profile === currentProfile) snapshot();
+    const isCurrentPage =
+      target.profile === currentProfile && target.page === activePageIndex();
+    if (isCurrentPage) snapshot();
     key.visuals = { ...(key.visuals || {}), [target.slot]: result.asset };
-    if (target.profile === currentProfile) renderKeys();
+    if (isCurrentPage) renderKeys();
+    persistPages();
     document.querySelector("#lastSaved").textContent = "Unsynced changes";
     showToast(
       result.asset.animated ? "Animated icon added" : "Static icon added",
@@ -586,7 +736,7 @@ iconUpload.addEventListener("change", async () => {
 });
 
 function removeIcon(slot) {
-  const key = layouts[currentProfile][selectedIndex];
+  const key = activeLayout()[selectedIndex];
   if (!key?.visuals?.[slot]) return;
   const visuals = { ...key.visuals, [slot]: null };
   updateKey({ visuals });
@@ -606,9 +756,9 @@ document.querySelectorAll("[data-visual-behavior]").forEach((button) => {
 });
 
 document.querySelector("#clearKeyButton").addEventListener("click", () => {
-  if (!layouts[currentProfile][selectedIndex]) return;
+  if (!activeLayout()[selectedIndex]) return;
   snapshot();
-  layouts[currentProfile][selectedIndex] = null;
+  activeLayout()[selectedIndex] = null;
   setRuntimeVisualState(selectedIndex, false);
   renderKeys();
   showToast("Key cleared", "The selected slot is now empty.");
@@ -637,7 +787,7 @@ document.querySelector("#actionTarget").addEventListener("change", (event) => {
   updateKey({ target: event.target.value, description: `Scene: ${event.target.value}` });
 });
 document.querySelector("#actionValue").addEventListener("change", (event) => {
-  const key = layouts[currentProfile][selectedIndex];
+  const key = activeLayout()[selectedIndex];
   if (!key) return;
   const value = event.target.value.trim();
   const usesShellCommand = ["launch", "command", "hotkey"].includes(key.id) || key.id?.startsWith("custom-");
@@ -668,7 +818,7 @@ document.querySelector("#identifyButton").addEventListener("click", async (event
 
 document.querySelector("#testActionButton").addEventListener("click", async () => {
   const selected = keyGrid.children[selectedIndex];
-  const action = layouts[currentProfile][selectedIndex];
+  const action = activeLayout()[selectedIndex];
   if (!action) {
     showToast("Nothing to test", "Assign an action to this key first.");
     return;
@@ -684,11 +834,17 @@ document.querySelector("#testActionButton").addEventListener("click", async () =
     } else {
       const testedIndex = selectedIndex;
       const testedProfile = currentProfile;
+      const testedPage = activePageIndex();
       setRuntimeVisualState(testedIndex, true);
       renderKeys();
       window.setTimeout(() => {
-        runtimeVisualStates.set(visualStateKey(testedProfile, testedIndex), false);
-        if (currentProfile === testedProfile) renderKeys();
+        runtimeVisualStates.set(
+          visualStateKey(testedProfile, testedPage, testedIndex),
+          false
+        );
+        if (currentProfile === testedProfile && activePageIndex() === testedPage) {
+          renderKeys();
+        }
       }, 450);
     }
   }
@@ -707,23 +863,27 @@ document.querySelector("#profileSelect").addEventListener("change", (event) => {
   future = [];
   document.querySelector("#layoutTitle").textContent = profileNames[currentProfile];
   updateHistoryButtons();
+  renderPageTabs();
   renderKeys();
+  persistPages();
 });
 
 undoButton.addEventListener("click", () => {
   if (!history.length) return;
-  future.push(JSON.stringify(layouts[currentProfile]));
-  layouts[currentProfile] = JSON.parse(history.pop());
+  future.push(JSON.stringify(activeLayout()));
+  replaceActiveLayout(JSON.parse(history.pop()));
   renderKeys();
   updateHistoryButtons();
+  persistPages();
 });
 
 redoButton.addEventListener("click", () => {
   if (!future.length) return;
-  history.push(JSON.stringify(layouts[currentProfile]));
-  layouts[currentProfile] = JSON.parse(future.pop());
+  history.push(JSON.stringify(activeLayout()));
+  replaceActiveLayout(JSON.parse(future.pop()));
   renderKeys();
   updateHistoryButtons();
+  persistPages();
 });
 
 document.querySelector("#syncButton").addEventListener("click", syncDeck);
@@ -764,23 +924,43 @@ document.querySelector(".page-control").addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button) return;
   if (button.dataset.pageAction === "add") {
-    showToast("New page created", "Page 3 is ready for actions.");
+    if (pageLayouts[currentProfile].length >= 8) {
+      showToast("Page limit reached", "A profile can contain up to eight pages.");
+      return;
+    }
+    pageLayouts[currentProfile].push(Array(15).fill(null));
+    switchPage(pageLayouts[currentProfile].length - 1, false);
+    document.querySelector("#lastSaved").textContent = "Unsynced changes";
+    showToast(
+      `Page ${pageLayouts[currentProfile].length} created`,
+      "Assign actions, then sync this page to show it on the physical N1."
+    );
     return;
   }
   const pageIndex = Number(button.dataset.pageIndex);
-  if (!Number.isInteger(pageIndex)) return;
-  document.querySelectorAll(".page-tab").forEach((tab) => {
-    const isActive = Number(tab.dataset.pageIndex) === pageIndex;
-    tab.classList.toggle("active", isActive);
-    tab.setAttribute("aria-selected", String(isActive));
-  });
-  showToast(`Page ${pageIndex + 1}`, "Switched the device preview.");
+  switchPage(pageIndex);
+});
+
+document.querySelector(".page-control").addEventListener("keydown", (event) => {
+  if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+  event.preventDefault();
+  const direction = event.key === "ArrowRight" ? 1 : -1;
+  const nextPage = Math.max(
+    0,
+    Math.min(activePageIndex() + direction, pageLayouts[currentProfile].length - 1)
+  );
+  switchPage(nextPage);
+  document.querySelector(`.page-tab[data-page-index="${nextPage}"]`)?.focus();
 });
 
 document.querySelectorAll(".side-key").forEach((button) => {
   button.addEventListener("click", () => {
     const isCancel = button.dataset.control === "cancel";
-    showToast(isCancel ? "Cancel / back" : "Mode switch", "Hardware button mapping tested.");
+    if (!isCancel) {
+      cycleHardwarePage();
+      return;
+    }
+    showToast("Cancel / back", "This hardware button is not assigned yet.");
   });
 });
 
@@ -839,8 +1019,14 @@ function handleHardwareEvent(message) {
     return;
   }
   if (message.event === "input" && message.type === "button") {
-    const keyIndex = Number(message.key) - 1;
-    const key = layouts[currentProfile]?.[keyIndex];
+    const physicalKey = Number(message.key);
+    if (physicalKey === 17) {
+      if (Number(message.state) === 1) cycleHardwarePage();
+      return;
+    }
+    if (physicalKey < 1 || physicalKey > 15) return;
+    const keyIndex = physicalKey - 1;
+    const key = activeLayout()?.[keyIndex];
     if (key?.visuals?.secondary) {
       if (key.visualBehavior === "toggle" && message.state === 1) {
         setRuntimeVisualState(keyIndex, !getRuntimeVisualState(keyIndex));
@@ -876,11 +1062,13 @@ function handleHardwareEvent(message) {
 
 async function restoreAssetPaths() {
   const visuals = [];
-  Object.values(layouts).forEach((layout) => {
-    layout.forEach((key) => {
-      ["primary", "secondary"].forEach((slot) => {
-        const visual = key?.visuals?.[slot];
-        if (visual?.id && !visual.path) visuals.push(visual);
+  Object.values(pageLayouts).forEach((pages) => {
+    pages.forEach((layout) => {
+      layout.forEach((key) => {
+        ["primary", "secondary"].forEach((slot) => {
+          const visual = key?.visuals?.[slot];
+          if (visual?.id && !visual.path) visuals.push(visual);
+        });
       });
     });
   });
@@ -899,17 +1087,31 @@ async function initializeNativeState() {
     try {
       const config = await backend.loadConfig();
       const profile = config?.profile;
-      if (profile && layouts[profile] && Array.isArray(config.keys) && config.keys.length === 15) {
-        layouts[profile] = config.keys;
+      if (
+        profile &&
+        pageLayouts[profile] &&
+        Array.isArray(config.keys) &&
+        config.keys.length === 15
+      ) {
+        const savedPage = Number(config.page);
+        const pageIndex = Number.isInteger(savedPage)
+          ? Math.max(0, Math.min(savedPage - 1, 7))
+          : 0;
+        while (pageLayouts[profile].length <= pageIndex) {
+          pageLayouts[profile].push(Array(15).fill(null));
+        }
+        pageLayouts[profile][pageIndex] = config.keys;
+        currentPageByProfile[profile] = pageIndex;
         currentProfile = profile;
         document.querySelector("#profileSelect").value = profile;
         document.querySelector("#layoutTitle").textContent = profileNames[profile];
-        localStorage.setItem(layoutStorageKey, JSON.stringify(layouts));
+        persistPages();
       }
     } catch {
       // A first run has no native configuration to restore.
     }
   }
+  renderPageTabs();
   await restoreAssetPaths();
   await detectDevice();
   backend.listen(handleHardwareEvent).catch((error) => {
@@ -941,5 +1143,10 @@ document.head.appendChild(style);
 
 renderBuildInfo();
 renderActions();
+document.querySelector("#profileSelect").value = currentProfile;
+document.querySelector("#layoutTitle").textContent = profileNames[currentProfile];
+renderPageTabs();
 renderKeys();
 initializeNativeState();
+
+window.addEventListener("beforeunload", persistPages);

@@ -380,8 +380,14 @@ impl AppCore {
             return Err("Sync payload must contain at most 18 keys".into());
         }
         let brightness = clamped_number(payload.get("brightness"), 86);
+        let page = payload
+            .get("page")
+            .and_then(Value::as_u64)
+            .unwrap_or(1)
+            .clamp(1, 99);
         let active_config = json!({
             "profile": payload.get("profile").and_then(Value::as_str).unwrap_or("streaming"),
+            "page": page,
             "brightness": brightness,
             "keys": keys
         });
@@ -404,6 +410,7 @@ impl AppCore {
             "ok": true,
             "written": result.get("written").and_then(Value::as_u64).unwrap_or(0),
             "animated": result.get("animated").and_then(Value::as_u64).unwrap_or(0),
+            "page": result.get("page").and_then(Value::as_u64).unwrap_or(page),
             "brightness": result.get("brightness").and_then(Value::as_u64).unwrap_or(brightness)
         }))
     }
