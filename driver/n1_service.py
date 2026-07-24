@@ -96,7 +96,7 @@ def draw_symbol(draw: ImageDraw.ImageDraw, icon: str, color: tuple[int, int, int
     elif icon in {"folder"}:
         draw.rounded_rectangle((26, 29, 70, 54), radius=4, outline=bright, width=4)
         draw.polygon(((28, 29), (38, 22), (52, 22), (58, 29)), fill=bright)
-    elif icon in {"music", "volume"}:
+    elif icon in {"music", "sound", "volume"}:
         draw.ellipse((29, 43, 40, 54), fill=bright)
         draw.ellipse((53, 39, 64, 50), fill=bright)
         draw.line((39, 47, 39, 24, 63, 20, 63, 44), fill=bright, width=4)

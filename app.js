@@ -20,6 +20,9 @@ const backend = {
   storeAsset(payload) {
     return this.invoke("store_asset", { payload });
   },
+  storeSound(payload) {
+    return this.invoke("store_sound", { payload });
+  },
   setBrightness(brightness) {
     return this.invoke("set_brightness", { brightness });
   },
@@ -62,6 +65,7 @@ const icons = {
   folder: '<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"></path></svg>',
   web: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><path d="M3 12h18M12 3c2.4 2.5 3.6 5.5 3.6 9s-1.2 6.5-3.6 9c-2.4-2.5-3.6-5.5-3.6-9S9.6 5.5 12 3Z"></path></svg>',
   music: '<svg viewBox="0 0 24 24"><path d="M9 18V5l10-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="16" cy="16" r="3"></circle></svg>',
+  sound: '<svg viewBox="0 0 24 24"><path d="M4 13v-2M8 16V8M12 19V5M16 16V8M20 13v-2"></path></svg>',
   sun: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19"></path></svg>',
   lock: '<svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path></svg>',
   layers: '<svg viewBox="0 0 24 24"><path d="m4 9 8-5 8 5-8 5-8-5Z"></path><path d="m4 14 8 5 8-5"></path></svg>',
@@ -79,6 +83,7 @@ const actionCatalog = [
   { id: "command", name: "Run Command", subtitle: "Shell", description: "Execute shell command", icon: "terminal", color: "#ff9f1c", category: "system", group: "Desktop" },
   { id: "folder", name: "Open Folder", subtitle: "Files", description: "Open a local folder", icon: "folder", color: "#37b7ff", category: "system", group: "Desktop" },
   { id: "website", name: "Open Website", subtitle: "Browser", description: "Open URL", icon: "web", color: "#a78bfa", category: "system", group: "Navigation" },
+  { id: "sound", name: "Play Sound", subtitle: "Local audio", description: "Choose a sound file", soundPressBehavior: "stop", soundLoop: false, icon: "sound", color: "#37b7ff", category: "system", group: "Navigation" },
   { id: "music", name: "Play / Pause", subtitle: "Media", description: "System media control", command: "playerctl play-pause", icon: "music", color: "#38d996", category: "system", group: "Navigation" },
   { id: "lock", name: "Lock Screen", subtitle: "Linux", description: "Lock this session", command: "loginctl lock-session", icon: "lock", color: "#e8ff58", category: "system", group: "Navigation" }
 ];
@@ -119,7 +124,12 @@ let deviceDetected = false;
 let hardwareTransportReady = false;
 let hardwarePageSwitching = false;
 let deckSyncInProgress = false;
+let autoSyncTimer = null;
+let autoSyncQueued = false;
+let autoSyncRevision = 0;
+let autoSyncAnnounce = false;
 let pendingIconSlot = null;
+let pendingSoundTarget = null;
 const runtimeVisualStates = new Map();
 
 const keyGrid = document.querySelector("#keyGrid");
@@ -248,6 +258,37 @@ function persistPages() {
   }
 }
 
+function setAutoSyncStatus(message, state) {
+  const status = document.querySelector("#lastSaved");
+  status.textContent = message;
+  status.dataset.state = state;
+}
+
+function requestDeviceSync({ immediate = false, announce = false } = {}) {
+  persistPages();
+  autoSyncRevision += 1;
+  autoSyncQueued = true;
+  autoSyncAnnounce ||= announce;
+  window.clearTimeout(autoSyncTimer);
+  autoSyncTimer = null;
+
+  if (!hardwareTransportReady) {
+    setAutoSyncStatus(
+      deviceDetected ? "Saved locally · waiting for driver" : "Saved locally · device offline",
+      "offline"
+    );
+    return Promise.resolve();
+  }
+
+  setAutoSyncStatus("Change queued for device", "pending");
+  if (immediate) return flushDeviceSync();
+  autoSyncTimer = window.setTimeout(() => {
+    autoSyncTimer = null;
+    void flushDeviceSync();
+  }, 450);
+  return Promise.resolve();
+}
+
 function visualStateKey(profile, page, index) {
   return `${profile}:${page}:${index}`;
 }
@@ -294,6 +335,12 @@ function escapeHtml(value) {
   })[char]);
 }
 
+function formatFileSize(bytes) {
+  const size = Number(bytes) || 0;
+  if (size < 1_000_000) return `${Math.max(1, Math.round(size / 1_000))} KB`;
+  return `${(size / 1_000_000).toFixed(1)} MB`;
+}
+
 function renderPageTabs() {
   const pages = pageLayouts[currentProfile];
   const currentPage = activePageIndex();
@@ -331,9 +378,9 @@ function renderPageTabs() {
   tabs.querySelector(".active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
-function switchPage(pageIndex, announce = true) {
+function switchPage(pageIndex, announce = true, sync = true) {
   const pages = pageLayouts[currentProfile];
-  if (!Number.isInteger(pageIndex) || !pages[pageIndex]) return;
+  if (!Number.isInteger(pageIndex) || !pages[pageIndex]) return Promise.resolve();
   currentPageByProfile[currentProfile] = pageIndex;
   selectedIndex = 0;
   duplicateSource = null;
@@ -342,15 +389,16 @@ function switchPage(pageIndex, announce = true) {
   updateHistoryButtons();
   renderPageTabs();
   renderKeys();
-  persistPages();
-  document.querySelector("#lastSaved").textContent =
-    `Page ${pageIndex + 1} selected · sync to apply`;
+  const syncPromise = sync
+    ? requestDeviceSync({ immediate: true })
+    : Promise.resolve();
   if (announce) {
     showToast(
       `Page ${pageIndex + 1}`,
-      "The page layout is now open. Sync to show it on the physical N1."
+      "The page layout is open and queued for the physical N1."
     );
   }
+  return syncPromise;
 }
 
 function deleteCurrentPage() {
@@ -375,7 +423,6 @@ function deleteCurrentPage() {
 
   const nextPage = Math.min(pageIndex, pages.length - 1);
   switchPage(nextPage, false);
-  document.querySelector("#lastSaved").textContent = "Page deleted · sync to apply";
   document.querySelector(`.page-tab[data-page-index="${nextPage}"]`)?.focus();
   showToast(
     `Page ${pageNumber} deleted`,
@@ -462,6 +509,9 @@ function updateInspector() {
   const targetSelect = document.querySelector("#actionTarget");
   const actionValue = document.querySelector("#actionValue");
   const targetLabel = document.querySelector("#targetLabel");
+  const isSoundAction = key?.id === "sound";
+  document.querySelector("#standardActionTarget").hidden = isSoundAction;
+  document.querySelector("#soundPicker").hidden = !isSoundAction;
   const targetSettings = {
     scene: ["Target scene", "", false],
     website: ["Website URL", "https://example.com", true],
@@ -481,6 +531,30 @@ function updateInspector() {
   } else {
     targetSelect.value = key?.target || "Starting Soon";
   }
+  const sound = isSoundAction ? key?.sound : null;
+  const soundCard = document.querySelector("#soundFileCard");
+  soundCard.classList.toggle("loaded", Boolean(sound));
+  document.querySelector("#soundFileName").textContent = sound?.name || "Choose a sound";
+  document.querySelector("#soundFileMeta").textContent = sound
+    ? `${String(sound.mime || "audio").replace("audio/", "").toUpperCase()} · ${formatFileSize(sound.size)}`
+    : "Up to 20 MB";
+  document.querySelector("#removeSoundFile").hidden = !sound;
+  const soundLoopToggle = document.querySelector("#soundLoopToggle");
+  const soundRestartToggle = document.querySelector("#soundRestartToggle");
+  soundLoopToggle.checked = key?.soundLoop === true;
+  soundRestartToggle.checked = key?.soundPressBehavior === "restart";
+  soundRestartToggle.disabled = soundLoopToggle.checked;
+  document.querySelector(".sound-restart-toggle").classList.toggle(
+    "disabled",
+    soundLoopToggle.checked
+  );
+  let soundRestartDescription = "Stop the current sound";
+  if (soundLoopToggle.checked) {
+    soundRestartDescription = "Loop mode always stops on the next press";
+  } else if (soundRestartToggle.checked) {
+    soundRestartDescription = "Stop the current sound and play it from the beginning";
+  }
+  document.querySelector("#soundRestartDescription").textContent = soundRestartDescription;
   document.querySelector(".action-config").style.opacity = key ? "1" : ".4";
   document.querySelectorAll("#colorRow button").forEach((button) => {
     button.classList.toggle("active", button.dataset.color === key?.color);
@@ -540,6 +614,7 @@ function handleKeyClick(index) {
       ? structuredClone(activeLayout()[duplicateSource])
       : null;
     duplicateSource = null;
+    requestDeviceSync();
     showToast("Key duplicated", `Copied the action to key ${String(index + 1).padStart(2, "0")}.`);
   }
   selectedIndex = index;
@@ -560,6 +635,7 @@ function assignAction(index, actionId) {
   setRuntimeVisualState(index, false);
   selectedIndex = index;
   renderKeys();
+  requestDeviceSync();
   showToast("Action assigned", `${action.name} is ready on key ${String(index + 1).padStart(2, "0")}.`);
 }
 
@@ -576,38 +652,54 @@ function updateKey(patch) {
   snapshot();
   activeLayout()[selectedIndex] = { ...activeLayout()[selectedIndex], ...patch };
   renderKeys();
-  document.querySelector("#lastSaved").textContent = "Unsynced changes";
+  requestDeviceSync();
 }
 
-async function syncDeck() {
-  if (deckSyncInProgress) return;
+async function flushDeviceSync() {
+  window.clearTimeout(autoSyncTimer);
+  autoSyncTimer = null;
+  if (!autoSyncQueued || !hardwareTransportReady || deckSyncInProgress) return;
+
+  const revision = autoSyncRevision;
+  const syncProfile = currentProfile;
+  const syncPage = activePageIndex();
+  const announce = autoSyncAnnounce;
+  const payload = {
+    profile: syncProfile,
+    page: syncPage + 1,
+    brightness: Number(brightness.value),
+    keys: structuredClone(activeLayout())
+  };
+  autoSyncQueued = false;
+  autoSyncAnnounce = false;
   deckSyncInProgress = true;
-  const button = document.querySelector("#syncButton");
-  const original = button.innerHTML;
-  button.disabled = true;
-  button.innerHTML = '<svg viewBox="0 0 24 24" style="animation:spin .8s linear infinite"><path d="M20 12a8 8 0 1 1-2.3-5.7"></path></svg><span>Syncing…</span>';
-  persistPages();
+  setAutoSyncStatus("Syncing automatically…", "syncing");
+  let syncSucceeded = false;
+
   try {
-    const result = await backend.sync({
-      profile: currentProfile,
-      page: activePageIndex() + 1,
-      brightness: Number(brightness.value),
-      keys: activeLayout()
-    });
+    const result = await backend.sync(payload);
     if (!result.ok) throw new Error(result.error || "Hardware sync failed");
+    syncSucceeded = true;
     hardwareTransportReady = true;
-    for (let index = 0; index < activeLayout().length; index += 1) {
-      setRuntimeVisualState(index, false);
+    if (currentProfile === syncProfile && activePageIndex() === syncPage) {
+      for (let index = 0; index < activeLayout().length; index += 1) {
+        setRuntimeVisualState(index, false);
+      }
+      renderKeys();
     }
-    renderKeys();
-    document.querySelector("#lastSaved").textContent = "Synced just now";
-    const animationLabel = result.animated ? ` · ${result.animated} animated` : "";
-    showToast(
-      `Page ${activePageIndex() + 1} synced to N1`,
-      `${result.written} key images are live${animationLabel}.`
-    );
+    if (revision === autoSyncRevision && !autoSyncQueued) {
+      setAutoSyncStatus("Auto-synced just now", "ready");
+    }
+    if (announce) {
+      const animationLabel = result.animated ? ` · ${result.animated} animated` : "";
+      showToast(
+        `Page ${syncPage + 1} is live`,
+        `${result.written} key images transferred${animationLabel}.`
+      );
+    }
   } catch (error) {
-    document.querySelector("#lastSaved").textContent = "Saved locally · device sync failed";
+    autoSyncQueued = true;
+    setAutoSyncStatus("Saved locally · automatic sync failed", "error");
     showToast(
       deviceDetected ? "Hardware sync failed" : "N1 is offline",
       error.message || "The N1 driver could not complete the transfer."
@@ -615,8 +707,9 @@ async function syncDeck() {
     detectDevice();
   } finally {
     deckSyncInProgress = false;
-    button.disabled = false;
-    button.innerHTML = original;
+    if (syncSucceeded && autoSyncQueued && hardwareTransportReady) {
+      window.setTimeout(() => void flushDeviceSync(), 50);
+    }
   }
 }
 
@@ -633,13 +726,13 @@ async function cycleHardwarePage() {
 
   hardwarePageSwitching = true;
   const nextPage = (activePageIndex() + 1) % pages.length;
-  switchPage(nextPage, false);
+  switchPage(nextPage, false, false);
   showToast(
     `Loading Page ${nextPage + 1}`,
     "The middle device button is updating all 15 physical keys."
   );
   try {
-    await syncDeck();
+    await requestDeviceSync({ immediate: true, announce: true });
   } finally {
     hardwarePageSwitching = false;
   }
@@ -647,6 +740,7 @@ async function cycleHardwarePage() {
 
 async function detectDevice() {
   try {
+    const transportWasReady = hardwareTransportReady;
     const device = await backend.device();
     deviceDetected = Boolean(device.connected);
     hardwareTransportReady = Boolean(device.transportReady);
@@ -674,6 +768,14 @@ async function detectDevice() {
         ? '<i class="green"></i> Hardware transport ready'
         : '<i style="background:#ff9f1c"></i> Device detected · driver unavailable'
       : '<i style="background:var(--danger)"></i> Device offline';
+    if (!hardwareTransportReady && !autoSyncQueued && !deckSyncInProgress) {
+      setAutoSyncStatus("Auto-sync waiting for device", "offline");
+    } else if (hardwareTransportReady && !autoSyncQueued && !deckSyncInProgress) {
+      setAutoSyncStatus("Auto-sync ready", "ready");
+    }
+    if (!transportWasReady && hardwareTransportReady && autoSyncQueued) {
+      void flushDeviceSync();
+    }
   } catch {
     document.querySelector("#deviceStatus").textContent = "Detection unavailable";
   }
@@ -695,9 +797,7 @@ keyTitle.addEventListener("input", () => {
   key.title = keyTitle.value;
   const screenLabel = keyGrid.children[selectedIndex]?.querySelector(".key-label");
   if (screenLabel) screenLabel.textContent = keyTitle.value;
-});
-keyTitle.addEventListener("change", () => {
-  document.querySelector("#lastSaved").textContent = "Unsynced changes";
+  requestDeviceSync();
 });
 
 document.querySelectorAll("#colorRow button").forEach((button) => {
@@ -730,7 +830,7 @@ function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.addEventListener("load", () => resolve(reader.result));
-    reader.addEventListener("error", () => reject(new Error("The icon file could not be read")));
+    reader.addEventListener("error", () => reject(new Error("The selected file could not be read")));
     reader.readAsDataURL(file);
   });
 }
@@ -761,8 +861,7 @@ iconUpload.addEventListener("change", async () => {
     if (isCurrentPage) snapshot();
     key.visuals = { ...(key.visuals || {}), [target.slot]: result.asset };
     if (isCurrentPage) renderKeys();
-    persistPages();
-    document.querySelector("#lastSaved").textContent = "Unsynced changes";
+    requestDeviceSync();
     showToast(
       result.asset.animated ? "Animated icon added" : "Static icon added",
       `${file.name} is assigned to the ${target.slot === "primary" ? "first" : "second"} state.`
@@ -801,6 +900,7 @@ document.querySelector("#clearKeyButton").addEventListener("click", () => {
   activeLayout()[selectedIndex] = null;
   setRuntimeVisualState(selectedIndex, false);
   renderKeys();
+  requestDeviceSync();
   showToast("Key cleared", "The selected slot is now empty.");
 });
 
@@ -832,6 +932,75 @@ document.querySelector("#actionValue").addEventListener("change", (event) => {
   const value = event.target.value.trim();
   const usesShellCommand = ["launch", "command", "hotkey"].includes(key.id) || key.id?.startsWith("custom-");
   updateKey(usesShellCommand ? { target: value, command: value, description: value } : { target: value, description: value });
+});
+
+document.querySelector("#chooseSoundFile").addEventListener("click", () => {
+  const key = activeLayout()[selectedIndex];
+  if (key?.id !== "sound") return;
+  pendingSoundTarget = {
+    profile: currentProfile,
+    page: activePageIndex(),
+    index: selectedIndex
+  };
+  const soundUpload = document.querySelector("#soundUpload");
+  soundUpload.value = "";
+  soundUpload.click();
+});
+
+document.querySelector("#soundUpload").addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  const target = pendingSoundTarget;
+  pendingSoundTarget = null;
+  if (!file || !target) return;
+  if (file.size > 20_000_000) {
+    showToast("Sound is too large", "Choose a sound file smaller than 20 MB.");
+    return;
+  }
+
+  const card = document.querySelector("#soundFileCard");
+  card.classList.add("uploading");
+  try {
+    const dataUrl = await readFileAsDataUrl(file);
+    const result = await backend.storeSound({ name: file.name, dataUrl });
+    if (!result.ok) throw new Error(result.error || "Sound upload failed");
+
+    const key = pageLayouts[target.profile]?.[target.page]?.[target.index];
+    if (key?.id !== "sound") throw new Error("The destination action is no longer available");
+    const isCurrentPage =
+      target.profile === currentProfile && target.page === activePageIndex();
+    if (isCurrentPage) snapshot();
+    key.sound = result.sound;
+    key.target = result.sound.name;
+    key.description = result.sound.name;
+    if (isCurrentPage) renderKeys();
+    requestDeviceSync();
+    showToast("Sound ready", `${result.sound.name} will play when the key is pressed.`);
+  } catch (error) {
+    showToast("Sound upload failed", error.message);
+  } finally {
+    card.classList.remove("uploading");
+    event.target.value = "";
+  }
+});
+
+document.querySelector("#removeSoundFile").addEventListener("click", () => {
+  const key = activeLayout()[selectedIndex];
+  if (key?.id !== "sound" || !key.sound) return;
+  updateKey({
+    sound: null,
+    target: "",
+    description: "Choose a sound file"
+  });
+  showToast("Sound removed", "Choose another file before testing this action.");
+});
+
+document.querySelector("#soundRestartToggle").addEventListener("change", (event) => {
+  const behavior = event.target.checked ? "restart" : "stop";
+  updateKey({ soundPressBehavior: behavior });
+});
+
+document.querySelector("#soundLoopToggle").addEventListener("change", (event) => {
+  updateKey({ soundLoop: event.target.checked });
 });
 
 document.querySelector("#identifyButton").addEventListener("click", async (event) => {
@@ -905,7 +1074,7 @@ document.querySelector("#profileSelect").addEventListener("change", (event) => {
   updateHistoryButtons();
   renderPageTabs();
   renderKeys();
-  persistPages();
+  requestDeviceSync({ immediate: true });
 });
 
 undoButton.addEventListener("click", () => {
@@ -914,7 +1083,7 @@ undoButton.addEventListener("click", () => {
   replaceActiveLayout(JSON.parse(history.pop()));
   renderKeys();
   updateHistoryButtons();
-  persistPages();
+  requestDeviceSync();
 });
 
 redoButton.addEventListener("click", () => {
@@ -923,10 +1092,9 @@ redoButton.addEventListener("click", () => {
   replaceActiveLayout(JSON.parse(future.pop()));
   renderKeys();
   updateHistoryButtons();
-  persistPages();
+  requestDeviceSync();
 });
 
-document.querySelector("#syncButton").addEventListener("click", syncDeck);
 document.querySelector(".topbar").addEventListener("mousedown", (event) => {
   if (event.button !== 0 || event.target.closest("button, input, select, a")) return;
   backend.startWindowDrag().catch((error) => {
@@ -970,10 +1138,9 @@ document.querySelector(".page-control").addEventListener("click", (event) => {
     }
     pageLayouts[currentProfile].push(Array(15).fill(null));
     switchPage(pageLayouts[currentProfile].length - 1, false);
-    document.querySelector("#lastSaved").textContent = "Unsynced changes";
     showToast(
       `Page ${pageLayouts[currentProfile].length} created`,
-      "Assign actions, then sync this page to show it on the physical N1."
+      "The new page is queued for the physical N1."
     );
     return;
   }
@@ -1058,7 +1225,11 @@ document.querySelector("#deviceButton").addEventListener("click", async () => {
 function handleHardwareEvent(message) {
   if (!message || typeof message !== "object") return;
   if (message.event === "driver") {
+    const transportWasReady = hardwareTransportReady;
     hardwareTransportReady = message.status === "ready";
+    if (!transportWasReady && hardwareTransportReady && autoSyncQueued) {
+      void flushDeviceSync();
+    }
     detectDevice();
     return;
   }
@@ -1097,30 +1268,39 @@ function handleHardwareEvent(message) {
     return;
   }
   if (message.event === "action") {
+    let title = message.ok ? "Hardware action triggered" : "Action could not run";
+    if (message.stopped) title = "Sound stopped";
+    else if (message.looping) title = "Sound looping";
+    else if (message.playing) title = "Sound playing";
     showToast(
-      message.ok ? "Hardware action triggered" : "Action could not run",
-      message.ok ? message.name : `${message.name || "Action"}: ${message.error}`
+      title,
+      message.stopped
+        ? `${message.name || "Sound"} playback stopped.`
+        : message.ok
+          ? message.name
+          : `${message.name || "Action"}: ${message.error}`
     );
   }
 }
 
 async function restoreAssetPaths() {
-  const visuals = [];
+  const assets = [];
   Object.values(pageLayouts).forEach((pages) => {
     pages.forEach((layout) => {
       layout.forEach((key) => {
         ["primary", "secondary"].forEach((slot) => {
           const visual = key?.visuals?.[slot];
-          if (visual?.id && !visual.path) visuals.push(visual);
+          if (visual?.id && !visual.path) assets.push(visual);
         });
+        if (key?.sound?.id && !key.sound.path) assets.push(key.sound);
       });
     });
   });
-  await Promise.all(visuals.map(async (visual) => {
+  await Promise.all(assets.map(async (asset) => {
     try {
-      visual.path = await backend.resolveAsset(visual.id);
+      asset.path = await backend.resolveAsset(asset.id);
     } catch {
-      // Missing legacy assets fall back to generated key artwork.
+      // Missing assets remain unavailable until the user replaces them.
     }
   }));
   renderKeys();
@@ -1169,10 +1349,6 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     document.querySelector("#actionSearch").focus();
   }
-  if (modifier && event.key.toLowerCase() === "s") {
-    event.preventDefault();
-    syncDeck();
-  }
   if (modifier && event.key.toLowerCase() === "z") {
     event.preventDefault();
     if (event.shiftKey) redoButton.click();
@@ -1180,10 +1356,6 @@ document.addEventListener("keydown", (event) => {
   }
   if (event.key === "Escape") closeDialog();
 });
-
-const style = document.createElement("style");
-style.textContent = "@keyframes spin { to { transform: rotate(360deg); } }";
-document.head.appendChild(style);
 
 renderBuildInfo();
 renderActions();

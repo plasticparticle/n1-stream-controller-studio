@@ -124,8 +124,8 @@ image. Each key can have a default/off icon and an optional pressed/on icon:
 - **Toggle on / off** changes icon state on every physical key press.
 - When no second icon is configured, the first icon remains visible in either mode.
 
-Static and animated images are fitted to the N1's 96×96 key display. Press **Sync to
-deck** after editing to transfer the current layout and start any animations.
+Static and animated images are fitted to the N1's 96×96 key display. Changes are
+transferred automatically; uploaded animations start after the queued transfer completes.
 
 ## What works
 
@@ -135,13 +135,16 @@ deck** after editing to transfer the current layout and start any animations.
 - Clears empty key slots and commits the display refresh
 - Applies physical display brightness
 - Maintains profiles and local drafts
+- Automatically transfers layout changes to the connected N1
 - Supports static and animated custom icons with momentary or toggle states
+- Plays assigned WAV, MP3, OGG, and FLAC files with stop, restart, and continuous-loop modes
 - Listens for buttons and rotary-dial events through the vendor HID interface
 - Runs explicit shell actions and built-in Linux media/session actions on key presses
 - Streams hardware and action status directly into the native UI
 
-The **Sync to deck** button performs a real hardware transfer. Failed USB access is
-reported as an error and never presented as a successful sync.
+Layout changes are saved locally immediately and transferred to the N1 automatically.
+Rapid edits are debounced and USB transfers are serialized. Failed USB access is reported
+as an error and queued changes are retained until the device reconnects.
 
 The hardware service monitors the N1 connection continuously. If the USB cable is
 removed, Studio releases the stale HID handle and automatically opens the controller

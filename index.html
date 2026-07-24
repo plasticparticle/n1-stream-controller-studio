@@ -89,10 +89,6 @@
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 5 5-5 5"></path><path d="M19 12h-8a6 6 0 0 0-6 6"></path></svg>
               </button>
             </div>
-            <button class="sync-button" id="syncButton">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7h-9"></path><path d="m17 4 3 3-3 3"></path><path d="M4 17h9"></path><path d="m7 20-3-3 3-3"></path></svg>
-              <span>Sync to deck</span>
-            </button>
             <div class="window-controls" aria-label="Window controls">
               <button id="windowMinimize" type="button" aria-label="Minimize window" title="Minimize">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16h12"></path></svg>
@@ -339,16 +335,54 @@
             </div>
 
             <div class="form-section action-config">
-              <label for="actionTarget" id="targetLabel">Target scene</label>
-              <div class="select-field">
-                <select id="actionTarget">
-                  <option>Starting Soon</option>
-                  <option>Main Camera</option>
-                  <option>Game Capture</option>
-                  <option>Be Right Back</option>
-                </select>
-                <input id="actionValue" type="text" spellcheck="false" hidden />
-                <svg viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"></path></svg>
+              <div id="standardActionTarget">
+                <label for="actionTarget" id="targetLabel">Target scene</label>
+                <div class="select-field">
+                  <select id="actionTarget">
+                    <option>Starting Soon</option>
+                    <option>Main Camera</option>
+                    <option>Game Capture</option>
+                    <option>Be Right Back</option>
+                  </select>
+                  <input id="actionValue" type="text" spellcheck="false" hidden />
+                  <svg viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"></path></svg>
+                </div>
+              </div>
+              <div class="sound-picker" id="soundPicker" hidden>
+                <div class="label-row">
+                  <label>Sound file</label>
+                  <span class="asset-format-hint">WAV · MP3 · OGG · FLAC</span>
+                </div>
+                <div class="sound-file-card" id="soundFileCard">
+                  <button class="sound-file-target" id="chooseSoundFile" type="button">
+                    <span class="sound-file-art">
+                      <svg viewBox="0 0 24 24"><path d="M4 13v-2M8 16V8M12 19V5M16 16V8M20 13v-2"></path></svg>
+                    </span>
+                    <span class="sound-file-copy">
+                      <strong id="soundFileName">Choose a sound</strong>
+                      <small id="soundFileMeta">Up to 20 MB</small>
+                    </span>
+                    <svg class="sound-file-arrow" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"></path></svg>
+                  </button>
+                  <button class="sound-file-remove" id="removeSoundFile" type="button" aria-label="Remove sound file" title="Remove sound">×</button>
+                </div>
+                <p class="sound-file-note">Played locally through the system audio output.</p>
+                <label class="switch-row sound-repeat-toggle sound-loop-toggle">
+                  <span>
+                    <strong>Loop until pressed again</strong>
+                    <small>Repeat continuously until this key is pressed</small>
+                  </span>
+                  <input id="soundLoopToggle" type="checkbox" />
+                  <i></i>
+                </label>
+                <label class="switch-row sound-repeat-toggle sound-restart-toggle">
+                  <span>
+                    <strong>Restart when pressed again</strong>
+                    <small id="soundRestartDescription">Stop the current sound</small>
+                  </span>
+                  <input id="soundRestartToggle" type="checkbox" />
+                  <i></i>
+                </label>
               </div>
               <label class="switch-row">
                 <span>
@@ -372,7 +406,7 @@
           <span id="usbIdentity">USB 5548:1002</span>
           <span>2 HID interfaces</span>
           <span class="status-spacer"></span>
-          <span id="lastSaved">Local changes saved</span>
+          <span class="auto-sync-status" id="lastSaved" data-state="ready">Auto-sync ready</span>
           <span class="build-stamp" aria-label="Application build information">
             <span class="build-label">VERSION</span>
             <strong id="appVersion">DEV</strong>
@@ -380,7 +414,6 @@
             <span class="build-label">BUILT</span>
             <time id="buildDate">LOCAL</time>
           </span>
-          <span class="key-hint"><kbd>Ctrl</kbd><kbd>S</kbd> Sync</span>
         </footer>
       </div>
     </div>
@@ -411,11 +444,12 @@
           Shell command
           <input id="customActionCommand" required placeholder="code ~/Development/project" />
         </label>
-        <button class="sync-button dialog-submit" type="submit">Create & assign</button>
+        <button class="primary-button dialog-submit" type="submit">Create & assign</button>
       </form>
     </div>
 
     <input id="iconUpload" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
+    <input id="soundUpload" type="file" accept=".wav,.mp3,.ogg,.flac,audio/wav,audio/mpeg,audio/ogg,audio/flac" hidden />
     <script src="build-info.js"></script>
     <script src="app.js"></script>
   </body>

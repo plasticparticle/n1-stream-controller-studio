@@ -321,7 +321,7 @@ svg {
   width: 17px;
 }
 
-.sync-button {
+.primary-button {
   height: 46px;
   padding: 0 17px;
   border: 0;
@@ -333,17 +333,13 @@ svg {
   display: flex;
   align-items: center;
   gap: 8px;
-  box-shadow: 0 7px 25px rgba(217,250,68,.12);
+  box-shadow: 0 7px 25px rgba(217, 250, 68, .12);
   transition: transform .18s ease, box-shadow .18s ease;
 }
 
-.sync-button:hover {
+.primary-button:hover {
   transform: translateY(-1px);
-  box-shadow: 0 10px 28px rgba(217,250,68,.2);
-}
-
-.sync-button svg {
-  width: 17px;
+  box-shadow: 0 10px 28px rgba(217, 250, 68, .2);
 }
 
 .window-controls {
@@ -1331,7 +1327,8 @@ kbd {
 }
 
 .form-section > label,
-.label-row label {
+.label-row label,
+#standardActionTarget > label {
   color: #848e92;
   font-size: 9px;
   font-weight: 700;
@@ -1763,6 +1760,150 @@ kbd {
   color: #697479;
 }
 
+.sound-picker {
+  min-width: 0;
+}
+
+.sound-file-card {
+  position: relative;
+  min-width: 0;
+  margin-top: 7px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(100deg, rgba(55, 183, 255, .045), transparent 55%),
+    #0c1012;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.sound-file-card:hover,
+.sound-file-card:focus-within {
+  border-color: #526067;
+}
+
+.sound-file-card.loaded {
+  border-color: rgba(55, 183, 255, .42);
+  box-shadow: inset 2px 0 0 #37b7ff;
+}
+
+.sound-file-target {
+  width: 100%;
+  min-width: 0;
+  min-height: 56px;
+  padding: 8px 38px 8px 9px;
+  border: 0;
+  background: transparent;
+  color: #cdd2cf;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 12px;
+  gap: 9px;
+  align-items: center;
+  text-align: left;
+}
+
+.sound-file-art {
+  width: 34px;
+  height: 34px;
+  border: 1px solid #323c41;
+  border-radius: 7px;
+  background: #151b1e;
+  color: #69757a;
+  display: grid;
+  place-items: center;
+  transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.sound-file-art svg {
+  width: 19px;
+}
+
+.sound-file-card.loaded .sound-file-art {
+  border-color: rgba(55, 183, 255, .36);
+  background: rgba(55, 183, 255, .08);
+  color: #37b7ff;
+}
+
+.sound-file-copy {
+  min-width: 0;
+}
+
+.sound-file-copy strong,
+.sound-file-copy small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sound-file-copy strong {
+  color: #cbd1ce;
+  font-size: 9px;
+}
+
+.sound-file-copy small {
+  margin-top: 3px;
+  color: #606b70;
+  font: 500 8px "DM Mono", monospace;
+}
+
+.sound-file-arrow {
+  width: 12px;
+  color: #596469;
+}
+
+.sound-file-remove {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  right: 7px;
+  width: 23px;
+  height: 23px;
+  padding: 0 0 2px;
+  transform: translateY(-50%);
+  border: 1px solid #414b50;
+  border-radius: 50%;
+  background: #171d20;
+  color: #838d91;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.sound-file-remove:hover {
+  border-color: rgba(239, 71, 111, .65);
+  color: #ef476f;
+}
+
+.sound-file-note {
+  margin: 7px 1px 0;
+  color: #596469;
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.sound-file-card.uploading .sound-file-art {
+  animation: sound-pulse 700ms ease-in-out infinite alternate;
+}
+
+.sound-repeat-toggle {
+  margin-top: 11px;
+  padding-top: 11px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.sound-repeat-toggle.disabled {
+  cursor: not-allowed;
+  opacity: .42;
+}
+
+@keyframes sound-pulse {
+  to {
+    border-color: var(--acid);
+    color: var(--acid);
+    box-shadow: 0 0 12px rgba(232, 255, 88, .18);
+  }
+}
+
 .switch-row {
   margin-top: 14px;
   display: flex;
@@ -1881,6 +2022,41 @@ kbd {
   flex: 1;
 }
 
+.auto-sync-status::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #697479;
+}
+
+.auto-sync-status[data-state="ready"]::before {
+  background: var(--green);
+}
+
+.auto-sync-status[data-state="pending"]::before,
+.auto-sync-status[data-state="syncing"]::before {
+  background: var(--acid);
+  box-shadow: 0 0 8px rgba(217, 250, 68, .42);
+}
+
+.auto-sync-status[data-state="syncing"]::before {
+  animation: auto-sync-pulse 700ms ease-in-out infinite alternate;
+}
+
+.auto-sync-status[data-state="offline"]::before,
+.auto-sync-status[data-state="error"]::before {
+  background: var(--danger);
+}
+
+@keyframes auto-sync-pulse {
+  to {
+    opacity: .35;
+    transform: scale(.72);
+  }
+}
+
 .build-stamp {
   height: 20px;
   padding: 0 7px;
@@ -1908,10 +2084,6 @@ kbd {
   width: 1px;
   height: 10px;
   background: #283035;
-}
-
-.key-hint {
-  gap: 3px !important;
 }
 
 .toast {
@@ -2102,6 +2274,8 @@ body.ambient-off .key-screen {
 .inspector-preview small,
 .form-section > label,
 .label-row label,
+.sound-file-copy strong,
+#standardActionTarget > label,
 .text-field span,
 .label-row > button {
   font-size: 10px;

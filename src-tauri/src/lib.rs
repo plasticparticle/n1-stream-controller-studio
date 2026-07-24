@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::thread;
 use std::time::Duration;
@@ -20,6 +20,9 @@ const USB_ROOT: &str = "/sys/bus/usb/devices";
 const USB_VENDOR_ID: &str = "5548";
 const USB_PRODUCT_ID: &str = "1002";
 const MAX_ASSET_BYTES: usize = 5_000_000;
+const MAX_SOUND_BYTES: usize = 20_000_000;
+const IMAGE_EXTENSIONS: &[&str] = &[".gif", ".jpg", ".jpeg", ".png", ".webp"];
+const SOUND_EXTENSIONS: &[&str] = &[".flac", ".mp3", ".ogg", ".wav"];
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,11 +43,17 @@ struct DriverBridge {
     inner: Mutex<DriverInner>,
 }
 
+struct ActiveSound {
+    pid: u32,
+    stop: mpsc::Sender<mpsc::Sender<()>>,
+}
+
 struct AppCore {
     app: AppHandle,
     driver: DriverBridge,
     active_config: Mutex<Option<Value>>,
     key_visual_states: Mutex<HashMap<u64, bool>>,
+    active_sounds: Arc<Mutex<HashMap<i64, ActiveSound>>>,
     config_path: PathBuf,
     asset_root: PathBuf,
     project_root: PathBuf,
@@ -297,6 +306,7 @@ impl AppCore {
             driver: DriverBridge::new(),
             active_config: Mutex::new(active_config),
             key_visual_states: Mutex::new(HashMap::new()),
+            active_sounds: Arc::new(Mutex::new(HashMap::new())),
             config_path,
             asset_root,
             project_root,
@@ -505,6 +515,79 @@ impl AppCore {
         }))
     }
 
+    fn store_sound(&self, payload: Value) -> Result<Value, String> {
+        let name = safe_asset_name(payload.get("name"), "sound");
+        let data_url = payload
+            .get("dataUrl")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Choose a WAV, MP3, OGG, or FLAC sound file".to_string())?;
+        let (header, encoded) = data_url
+            .split_once(',')
+            .ok_or_else(|| "Choose a WAV, MP3, OGG, or FLAC sound file".to_string())?;
+        let mime = header
+            .strip_prefix("data:")
+            .and_then(|value| value.strip_suffix(";base64"))
+            .ok_or_else(|| "Choose a WAV, MP3, OGG, or FLAC sound file".to_string())?;
+        let extension = match mime {
+            "audio/flac" | "audio/x-flac" => ".flac",
+            "audio/mpeg" | "audio/mp3" => ".mp3",
+            "audio/ogg" => ".ogg",
+            "audio/wav" | "audio/wave" | "audio/x-wav" | "audio/vnd.wave" => ".wav",
+            _ => match Path::new(&name)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref()
+            {
+                Some("flac") => ".flac",
+                Some("mp3") => ".mp3",
+                Some("ogg") => ".ogg",
+                Some("wav") => ".wav",
+                _ => return Err("Choose a WAV, MP3, OGG, or FLAC sound file".into()),
+            },
+        };
+        let stored_mime = match extension {
+            ".flac" => "audio/flac",
+            ".mp3" => "audio/mpeg",
+            ".ogg" => "audio/ogg",
+            ".wav" => "audio/wav",
+            _ => unreachable!("supported sound extensions are matched above"),
+        };
+        if encoded.len() > MAX_SOUND_BYTES.saturating_mul(4).div_ceil(3) + 1024 {
+            return Err("Sound files must be no larger than 20 MB".into());
+        }
+        let encoded = encoded
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        let data = BASE64
+            .decode(encoded)
+            .map_err(|_| "The uploaded sound contains invalid base64 data".to_string())?;
+        if data.is_empty() || data.len() > MAX_SOUND_BYTES {
+            return Err("Sound files must be between 1 byte and 20 MB".into());
+        }
+        if !valid_sound_signature(extension, &data) {
+            return Err("The uploaded file is not a valid supported sound".into());
+        }
+
+        let digest = hex::encode(Sha256::digest(&data));
+        let id = format!("{digest}{extension}");
+        let path = self.safe_asset_path(&id)?;
+        if !path.exists() {
+            write_private_file(&path, &data)?;
+        }
+        Ok(json!({
+            "ok": true,
+            "sound": {
+                "id": id,
+                "path": path.to_string_lossy(),
+                "name": name,
+                "mime": stored_mime,
+                "size": data.len()
+            }
+        }))
+    }
+
     fn resolve_asset(&self, id: &str) -> Result<String, String> {
         let path = self.safe_asset_path(id)?;
         if !path.is_file() {
@@ -518,9 +601,9 @@ impl AppCore {
         if !digest
             .chars()
             .all(|character| character.is_ascii_hexdigit())
-            || !matches!(extension, ".gif" | ".jpg" | ".jpeg" | ".png" | ".webp")
+            || (!IMAGE_EXTENSIONS.contains(&extension) && !SOUND_EXTENSIONS.contains(&extension))
         {
-            return Err("Invalid icon asset ID".into());
+            return Err("Invalid stored asset ID".into());
         }
         Ok(self.asset_root.join(id))
     }
@@ -538,6 +621,7 @@ impl AppCore {
         let primary = self.materialize_visual(visuals.get("primary"))?;
         let secondary = self.materialize_visual(visuals.get("secondary"))?;
         key["visuals"] = json!({"primary": primary, "secondary": secondary});
+        key["sound"] = self.materialize_sound(key.get("sound"))?;
         Ok(key)
     }
 
@@ -549,6 +633,9 @@ impl AppCore {
             .get("id")
             .and_then(Value::as_str)
             .ok_or_else(|| "Icon asset has no ID".to_string())?;
+        if !has_asset_extension(id, IMAGE_EXTENSIONS) {
+            return Err("Invalid icon asset ID".into());
+        }
         let path = self.safe_asset_path(id)?;
         if !path.is_file() {
             let name = visual.get("name").and_then(Value::as_str).unwrap_or(id);
@@ -559,45 +646,210 @@ impl AppCore {
         Ok(materialized)
     }
 
+    fn materialize_sound(&self, sound: Option<&Value>) -> Result<Value, String> {
+        let Some(sound) = sound.filter(|sound| sound.is_object()) else {
+            return Ok(Value::Null);
+        };
+        let id = sound
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Sound file has no ID".to_string())?;
+        if !has_asset_extension(id, SOUND_EXTENSIONS) {
+            return Err("Invalid sound asset ID".into());
+        }
+        let path = self.safe_asset_path(id)?;
+        if !path.is_file() {
+            let name = sound.get("name").and_then(Value::as_str).unwrap_or(id);
+            return Err(format!("Sound file is missing: {name}"));
+        }
+        let mut materialized = sound.clone();
+        materialized["path"] = Value::String(path.to_string_lossy().into_owned());
+        Ok(materialized)
+    }
+
     fn test_action(&self, key: i64, action: Value) -> Result<Value, String> {
-        resolve_action_command(&action)
-            .ok_or_else(|| "This action needs a command or integration target".to_string())?;
         self.execute_action(&action, key)?;
         Ok(json!({"ok": true}))
     }
 
     fn execute_action(&self, action: &Value, key: i64) -> Result<(), String> {
-        let resolved = resolve_action_command(action)
-            .ok_or_else(|| "This action needs a command or integration target".to_string())?;
         let name = action_name(action, key);
-        let spawn_result = Command::new(&resolved.program)
-            .args(&resolved.args)
-            .current_dir(&self.project_root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-        match spawn_result {
-            Ok(_) => {
-                self.emit(json!({
-                    "event": "action",
-                    "ok": true,
-                    "key": key,
-                    "name": name
-                }));
-                Ok(())
+        let is_sound = action.get("id").and_then(Value::as_str) == Some("sound");
+        if is_sound {
+            let active = lock(&self.active_sounds).remove(&key);
+            if let Some(active) = active {
+                let restart = !loop_sound_until_pressed(action) && restart_sound_on_press(action);
+                let (complete, stopped) = mpsc::channel();
+                let stop_sent = active.stop.send(complete).is_ok();
+                if stop_sent && restart {
+                    let _ = stopped.recv_timeout(Duration::from_secs(1));
+                }
+                if stop_sent && !restart {
+                    self.emit(json!({
+                        "event": "action",
+                        "ok": true,
+                        "key": key,
+                        "name": name,
+                        "stopped": true
+                    }));
+                    return Ok(());
+                }
             }
+        }
+        let resolved = if is_sound {
+            self.resolve_sound_commands(action)
+        } else {
+            resolve_action_command(action)
+                .map(|command| vec![command])
+                .ok_or_else(|| "This action needs a command or integration target".to_string())
+        };
+        let commands = match resolved {
+            Ok(commands) => commands,
             Err(error) => {
                 self.emit(json!({
                     "event": "action",
                     "ok": false,
                     "key": key,
-                    "name": name,
-                    "error": error.to_string()
+                    "name": &name,
+                    "error": &error
                 }));
-                Err(error.to_string())
+                return Err(error);
+            }
+        };
+        let mut last_error = None;
+        for resolved in commands {
+            match spawn_resolved_action(&resolved, &self.project_root) {
+                Ok(child) => {
+                    if is_sound {
+                        let replay = loop_sound_until_pressed(action).then_some(resolved);
+                        self.track_sound(key, child, replay);
+                    } else {
+                        thread::spawn(move || {
+                            let mut child = child;
+                            let _ = child.wait();
+                        });
+                    }
+                    self.emit(json!({
+                        "event": "action",
+                        "ok": true,
+                        "key": key,
+                        "name": name,
+                        "playing": is_sound,
+                        "looping": is_sound && loop_sound_until_pressed(action)
+                    }));
+                    return Ok(());
+                }
+                Err(error) => last_error = Some(error),
             }
         }
+        let error = if is_sound {
+            "No supported audio player is installed (tried PipeWire, PulseAudio, GStreamer, ffplay, mpv, VLC, and mpg123)".to_string()
+        } else {
+            last_error
+                .map(|error| error.to_string())
+                .unwrap_or_else(|| "Action could not be started".into())
+        };
+        self.emit(json!({
+            "event": "action",
+            "ok": false,
+            "key": key,
+            "name": name,
+            "error": error
+        }));
+        Err(error)
+    }
+
+    fn track_sound(&self, key: i64, mut child: Child, replay: Option<ResolvedAction>) {
+        let pid = child.id();
+        let (stop, stop_requested) = mpsc::channel();
+        lock(&self.active_sounds).insert(key, ActiveSound { pid, stop });
+        let active_sounds = self.active_sounds.clone();
+        let project_root = self.project_root.clone();
+        thread::spawn(move || {
+            let mut completion = None;
+            'playback: loop {
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(_)) => break,
+                        Err(_) => break 'playback,
+                        Ok(None) => {}
+                    }
+                    match stop_requested.recv_timeout(Duration::from_millis(40)) {
+                        Ok(complete) => {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            completion = Some(complete);
+                            break 'playback;
+                        }
+                        Err(mpsc::RecvTimeoutError::Disconnected) => {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            break 'playback;
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    }
+                }
+
+                let Some(replay) = replay.as_ref() else {
+                    break;
+                };
+                match stop_requested.recv_timeout(Duration::from_millis(15)) {
+                    Ok(complete) => {
+                        completion = Some(complete);
+                        break 'playback;
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break 'playback,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                }
+                match spawn_resolved_action(replay, &project_root) {
+                    Ok(next_child) => child = next_child,
+                    Err(_) => {
+                        break 'playback;
+                    }
+                }
+            }
+            let mut active = lock(&active_sounds);
+            if active.get(&key).is_some_and(|sound| sound.pid == pid) {
+                active.remove(&key);
+            }
+            drop(active);
+            if let Some(complete) = completion {
+                let _ = complete.send(());
+            }
+        });
+    }
+
+    fn stop_all_sounds(&self) {
+        let sounds = lock(&self.active_sounds)
+            .drain()
+            .map(|(_, sound)| sound.stop)
+            .collect::<Vec<_>>();
+        for stop in sounds {
+            let (complete, _) = mpsc::channel();
+            let _ = stop.send(complete);
+        }
+    }
+
+    fn resolve_sound_commands(&self, action: &Value) -> Result<Vec<ResolvedAction>, String> {
+        let sound = action
+            .get("sound")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "Choose a sound file for this action".to_string())?;
+        let id = sound
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Choose a sound file for this action".to_string())?;
+        if !has_asset_extension(id, SOUND_EXTENSIONS) {
+            return Err("Invalid sound asset ID".into());
+        }
+        let path = self.safe_asset_path(id)?;
+        if !path.is_file() {
+            return Err(format!(
+                "Sound file is missing: {}",
+                sound.get("name").and_then(Value::as_str).unwrap_or(id)
+            ));
+        }
+        Ok(sound_player_commands(&path))
     }
 
     fn handle_hardware_input(self: Arc<Self>, event: Value) {
@@ -721,9 +973,53 @@ impl AppCore {
     }
 }
 
+#[derive(Clone)]
 struct ResolvedAction {
     program: String,
     args: Vec<String>,
+}
+
+fn spawn_resolved_action(resolved: &ResolvedAction, project_root: &Path) -> std::io::Result<Child> {
+    let mut command = Command::new(&resolved.program);
+    command
+        .args(&resolved.args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if project_root.is_dir() {
+        command.current_dir(project_root);
+    }
+    command.spawn()
+}
+
+fn sound_player_commands(path: &Path) -> Vec<ResolvedAction> {
+    let path = path.to_string_lossy().into_owned();
+    let direct = |program: &str, args: &[&str]| ResolvedAction {
+        program: program.into(),
+        args: args.iter().map(|value| (*value).into()).collect(),
+    };
+    let mut commands = Vec::new();
+    let compressed = path.ends_with(".mp3");
+    if !compressed {
+        commands.push(direct("pw-play", &[&path]));
+        commands.push(direct("paplay", &[&path]));
+    }
+    commands.push(direct("gst-play-1.0", &[&path]));
+    commands.push(direct(
+        "ffplay",
+        &["-nodisp", "-autoexit", "-loglevel", "quiet", &path],
+    ));
+    commands.push(direct("mpv", &["--no-video", "--really-quiet", &path]));
+    commands.push(direct(
+        "cvlc",
+        &["--play-and-exit", "--intf", "dummy", &path],
+    ));
+    if compressed {
+        commands.push(direct("mpg123", &["-q", &path]));
+        commands.push(direct("pw-play", &[&path]));
+        commands.push(direct("paplay", &[&path]));
+    }
+    commands
 }
 
 fn resolve_action_command(action: &Value) -> Option<ResolvedAction> {
@@ -788,6 +1084,30 @@ fn action_name(action: &Value, key: i64) -> String {
         .and_then(Value::as_str)
         .map(str::to_string)
         .unwrap_or_else(|| format!("Key {key}"))
+}
+
+fn restart_sound_on_press(action: &Value) -> bool {
+    action.get("soundPressBehavior").and_then(Value::as_str) == Some("restart")
+}
+
+fn loop_sound_until_pressed(action: &Value) -> bool {
+    action.get("soundLoop").and_then(Value::as_bool) == Some(true)
+}
+
+fn has_asset_extension(id: &str, allowed: &[&str]) -> bool {
+    id.get(64..)
+        .is_some_and(|extension| allowed.contains(&extension))
+}
+
+fn safe_asset_name(value: Option<&Value>, fallback: &str) -> String {
+    let raw_name = value.and_then(Value::as_str).unwrap_or(fallback);
+    Path::new(raw_name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(fallback)
+        .chars()
+        .take(120)
+        .collect()
 }
 
 fn clamped_number(value: Option<&Value>, default: u64) -> u64 {
@@ -873,6 +1193,23 @@ fn valid_image_signature(mime: &str, data: &[u8]) -> bool {
     }
 }
 
+fn valid_sound_signature(extension: &str, data: &[u8]) -> bool {
+    match extension {
+        ".flac" => data.starts_with(b"fLaC"),
+        ".mp3" => {
+            data.starts_with(b"ID3")
+                || data
+                    .get(0..2)
+                    .is_some_and(|header| header[0] == 0xff && header[1] & 0xe0 == 0xe0)
+        }
+        ".ogg" => data.starts_with(b"OggS"),
+        ".wav" => {
+            data.starts_with(b"RIFF") && data.get(8..12).is_some_and(|value| value == b"WAVE")
+        }
+        _ => false,
+    }
+}
+
 fn detect_animation(mime: &str, data: &[u8]) -> bool {
     match mime {
         "image/gif" => true,
@@ -927,6 +1264,14 @@ async fn sync_deck(state: State<'_, AppState>, payload: Value) -> Result<Value, 
 #[tauri::command]
 fn store_asset(state: State<'_, AppState>, payload: Value) -> Result<Value, String> {
     state.0.store_asset(payload)
+}
+
+#[tauri::command]
+async fn store_sound(state: State<'_, AppState>, payload: Value) -> Result<Value, String> {
+    let core = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || core.store_sound(payload))
+        .await
+        .map_err(error_text)?
 }
 
 #[tauri::command]
@@ -1023,6 +1368,7 @@ pub fn run() {
             start_window_drag,
             sync_deck,
             store_asset,
+            store_sound,
             set_brightness,
             identify_device,
             test_action,
@@ -1051,6 +1397,7 @@ pub fn run() {
         if let RunEvent::Exit = event
             && let Some(state) = app.try_state::<AppState>()
         {
+            state.0.stop_all_sounds();
             state.0.driver.stop();
         }
     });
@@ -1077,6 +1424,45 @@ mod tests {
         assert!(detect_animation("image/png", b"prefixacTLsuffix"));
         assert!(detect_animation("image/webp", b"prefixANIMsuffix"));
         assert!(!detect_animation("image/jpeg", b"jpeg"));
+    }
+
+    #[test]
+    fn validates_supported_sound_signatures() {
+        assert!(valid_sound_signature(".flac", b"fLaC"));
+        assert!(valid_sound_signature(".mp3", b"ID3\x04\x00"));
+        assert!(valid_sound_signature(".mp3", &[0xff, 0xfb]));
+        assert!(valid_sound_signature(".ogg", b"OggS"));
+        assert!(valid_sound_signature(".wav", b"RIFF0000WAVE"));
+        assert!(!valid_sound_signature(".wav", b"RIFF0000WEBP"));
+        assert!(!valid_sound_signature(".exe", b"RIFF0000WAVE"));
+    }
+
+    #[test]
+    fn passes_sound_paths_as_literal_process_arguments() {
+        let path = Path::new("/tmp/alert; touch should-not-run.wav");
+        let commands = sound_player_commands(path);
+        assert!(!commands.is_empty());
+        assert!(commands.iter().all(|command| command.program != "sh"));
+        assert!(
+            commands
+                .iter()
+                .all(|command| { command.args.last().map(String::as_str) == path.to_str() })
+        );
+    }
+
+    #[test]
+    fn configures_sound_repress_and_loop_modes() {
+        assert!(!restart_sound_on_press(&json!({"id": "sound"})));
+        assert!(!restart_sound_on_press(
+            &json!({"id": "sound", "soundPressBehavior": "stop"})
+        ));
+        assert!(restart_sound_on_press(
+            &json!({"id": "sound", "soundPressBehavior": "restart"})
+        ));
+        assert!(!loop_sound_until_pressed(&json!({"id": "sound"})));
+        assert!(loop_sound_until_pressed(
+            &json!({"id": "sound", "soundLoop": true})
+        ));
     }
 
     #[test]
