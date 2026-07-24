@@ -1,0 +1,121 @@
+name: Build Debian package
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-deb:
+    name: Build amd64 Debian package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            build-essential \
+            file \
+            git \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            python3-venv
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - name: Validate release version
+        id: version
+        shell: bash
+        run: |
+          package_version="$(node -p "require('./package.json').version")"
+          tauri_version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          cargo_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' src-tauri/Cargo.toml | head -n 1)"
+
+          if [[ "${package_version}" != "${tauri_version}" || "${package_version}" != "${cargo_version}" ]]; then
+            echo "Version mismatch: package=${package_version}, tauri=${tauri_version}, cargo=${cargo_version}" >&2
+            exit 1
+          fi
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" != "v${package_version}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match project version v${package_version}." >&2
+            exit 1
+          fi
+
+          echo "version=${package_version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Create driver build environment
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip setuptools wheel
+          .venv/bin/python -m pip install \
+            --no-build-isolation \
+            -r driver/requirements.txt
+          .venv/bin/python -m pip install pyinstaller
+
+      - name: Run checks
+        run: npm run check
+
+      - name: Build Debian package
+        run: npm run build
+
+      - name: Inspect Debian package
+        shell: bash
+        run: |
+          debs=(src-tauri/target/release/bundle/deb/*.deb)
+          [[ -f "${debs[0]}" ]]
+          dpkg-deb --info "${debs[0]}"
+          sha256sum "${debs[@]}"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: n1-stream-controller-studio-${{ steps.version.outputs.version }}-amd64-deb
+          path: src-tauri/target/release/bundle/deb/*.deb
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          debs=(src-tauri/target/release/bundle/deb/*.deb)
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" "${debs[@]}" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" "${debs[@]}" \
+              --verify-tag \
+              --generate-notes \
+              --title "N1 Stream Controller Studio ${GITHUB_REF_NAME}"
+          fi
