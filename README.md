@@ -12,6 +12,30 @@ stream controller.
 
 ![N1 Stream Controller Studio interface](docs/images/n1-stream-controller-studio.png)
 
+## Install the latest release
+
+On x86_64 Debian, Ubuntu, or Linux Mint, the installer downloads the newest published
+Debian package, validates it, installs its dependencies, and configures N1 USB
+permissions:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/plasticparticle/n1-stream-controller-studio/main/install.sh \
+  | bash -s -- --accept-alpha-risk
+```
+
+The explicit flag is required because the project is still unsafe EARLY ALPHA
+software. To inspect the script before running it:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/plasticparticle/n1-stream-controller-studio/main/install.sh
+less install.sh
+bash install.sh --accept-alpha-risk
+```
+
+Use `--version TAG` to install a particular release or `--dry-run` to download and
+validate it without changing the system. Running the installer again upgrades an
+existing installation.
+
 ## Native architecture
 
 Studio is a Tauri 2 desktop application. Its HTML, CSS, and JavaScript interface is
@@ -37,12 +61,12 @@ tray icon to reopen Studio; right-click it for **Open Studio** and **Quit**.
 The current build targets x86_64 Linux and has been tested on Linux Mint 22.3
 (Ubuntu 24.04 base).
 
-Install Node.js, npm, Python, and the native Linux build dependencies:
+Install Node.js (which includes npm), Python, and the native Linux build dependencies:
 
 ```bash
 sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
   libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf \
-  nodejs npm python3 python3-venv git
+  nodejs python3 python3-venv git
 ```
 
 Install [Rust](https://rustup.rs), then install the JavaScript tooling and pinned
