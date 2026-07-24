@@ -20,8 +20,9 @@ Install the pinned vendor SDK and the narrowly scoped udev permission rule:
 npm run setup:driver
 ```
 
-The setup command may ask for your sudo password while installing the udev rule. Unplug
-and reconnect the N1 afterward.
+The setup command creates `.venv`, installs pip/setuptools/wheel, and builds the pinned
+vendor SDK. It asks for your sudo password only when the udev rule is missing or
+outdated. Unplug and reconnect the N1 after a new rule is installed.
 
 If `.venv` is already present and only USB permission is missing, run:
 

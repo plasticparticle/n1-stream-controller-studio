@@ -15,8 +15,10 @@ if ! command -v git >/dev/null 2>&1; then
 fi
 
 python3 -m venv "${VENV_DIR}"
-"${VENV_DIR}/bin/python" -m pip install --upgrade pip
-"${VENV_DIR}/bin/pip" install --no-build-isolation -r "${PROJECT_DIR}/driver/requirements.txt"
+"${VENV_DIR}/bin/python" -m pip install --upgrade pip setuptools wheel
+"${VENV_DIR}/bin/python" -m pip install \
+  --no-build-isolation \
+  -r "${PROJECT_DIR}/driver/requirements.txt"
 
 echo
 echo "Installing the udev permission rule (sudo may ask for your password)…"
