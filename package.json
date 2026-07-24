@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
-    "check": "npm run native:prepare && node --check app.js && python3 -m py_compile driver/n1_service.py && bash -n install.sh scripts/*.sh && cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo test --manifest-path src-tauri/Cargo.toml",
+    "check": "npm run native:prepare && node --check app.js && python3 -m py_compile driver/n1_service.py && .venv/bin/python -m unittest driver/test_n1_service.py && bash -n install.sh scripts/*.sh && cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo test --locked --manifest-path src-tauri/Cargo.toml",
     "frontend:build": "bash scripts/build-frontend.sh",
     "sidecar:build": "bash scripts/build-driver-sidecar.sh",
     "native:prepare": "npm run frontend:build && npm run sidecar:build",

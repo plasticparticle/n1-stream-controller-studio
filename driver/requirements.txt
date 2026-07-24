@@ -1,1 +1,6 @@
-streamdock @ git+https://github.com/MiraboxSpace/StreamDock-Device-SDK.git@df53672a0c484bf6e679728a7a529f80df3cbd0d#subdirectory=Python-SDK
+# Runtime dependencies are pinned to the Python 3.12 / Linux amd64 release target.
+pillow==12.3.0 \
+    --hash=sha256:78cb2c6865a35ab8ff8b75fd122f6033b92a62c82801110e48ddd6c936a45d91
+pyudev==0.24.4 \
+    --hash=sha256:b3b6b01c68e6fc628428cc45ff3fe6c277afbb5d96507f14473ddb4a6b959e00
+streamdock @ https://github.com/MiraboxSpace/StreamDock-Device-SDK/archive/df53672a0c484bf6e679728a7a529f80df3cbd0d.tar.gz#sha256=099d34902d8b12c8b623cb6d5d0da9602d4e7f424ce269b1bb8245b81da5e866&subdirectory=Python-SDK

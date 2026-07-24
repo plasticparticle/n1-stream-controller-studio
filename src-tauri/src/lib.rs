@@ -1,15 +1,18 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
@@ -21,8 +24,16 @@ const USB_VENDOR_ID: &str = "5548";
 const USB_PRODUCT_ID: &str = "1002";
 const MAX_ASSET_BYTES: usize = 5_000_000;
 const MAX_SOUND_BYTES: usize = 20_000_000;
+const MAX_SYNC_BYTES: usize = 512_000;
+const MAX_JSON_DEPTH: usize = 8;
+const MAX_JSON_STRING_BYTES: usize = 4_096;
+const MAX_DRIVER_LINE_BYTES: usize = 256_000;
+const MAX_PENDING_HARDWARE_EVENTS: usize = 16;
+const MAX_ACTIVE_ACTION_PROCESSES: usize = 16;
+const SHELL_ACTION_OPT_IN: &str = "N1_STUDIO_ALLOW_SHELL_ACTIONS";
 const IMAGE_EXTENSIONS: &[&str] = &[".gif", ".jpg", ".jpeg", ".png", ".webp"];
 const SOUND_EXTENSIONS: &[&str] = &[".flac", ".mp3", ".ogg", ".wav"];
+const TRUSTED_PROGRAM_DIRS: &[&str] = &["/usr/bin", "/bin", "/usr/local/bin"];
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,12 +59,28 @@ struct ActiveSound {
     stop: mpsc::Sender<mpsc::Sender<()>>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TestActionInput {
+    id: String,
+    target: Option<String>,
+    sound_id: Option<String>,
+    sound_name: Option<String>,
+    sound_press_behavior: Option<String>,
+    sound_loop: Option<bool>,
+}
+
 struct AppCore {
     app: AppHandle,
     driver: DriverBridge,
     active_config: Mutex<Option<Value>>,
     key_visual_states: Mutex<HashMap<u64, bool>>,
     active_sounds: Arc<Mutex<HashMap<i64, ActiveSound>>>,
+    recent_hardware_actions: Mutex<HashMap<String, Instant>>,
+    pending_hardware_events: AtomicUsize,
+    active_action_processes: Arc<AtomicUsize>,
+    sync_guard: Mutex<()>,
+    allow_shell_actions: bool,
     config_path: PathBuf,
     asset_root: PathBuf,
     project_root: PathBuf,
@@ -135,6 +162,17 @@ impl DriverBridge {
                 match event {
                     CommandEvent::Stdout(bytes) => {
                         stdout_buffer.extend_from_slice(&bytes);
+                        if stdout_buffer.len() > MAX_DRIVER_LINE_BYTES
+                            && !stdout_buffer.contains(&b'\n')
+                        {
+                            stdout_buffer.clear();
+                            core.driver.set_state(
+                                &core,
+                                "error",
+                                "N1 driver emitted an oversized response",
+                            );
+                            continue;
+                        }
                         while let Some(newline) =
                             stdout_buffer.iter().position(|byte| *byte == b'\n')
                         {
@@ -291,7 +329,10 @@ impl AppCore {
     fn new(app: AppHandle) -> Result<Arc<Self>, String> {
         let app_data = app.path().app_data_dir().map_err(error_text)?;
         let asset_root = app_data.join("assets");
+        fs::create_dir_all(&app_data).map_err(error_text)?;
         fs::create_dir_all(&asset_root).map_err(error_text)?;
+        set_private_directory(&app_data)?;
+        set_private_directory(&asset_root)?;
 
         let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -307,6 +348,11 @@ impl AppCore {
             active_config: Mutex::new(active_config),
             key_visual_states: Mutex::new(HashMap::new()),
             active_sounds: Arc::new(Mutex::new(HashMap::new())),
+            recent_hardware_actions: Mutex::new(HashMap::new()),
+            pending_hardware_events: AtomicUsize::new(0),
+            active_action_processes: Arc::new(AtomicUsize::new(0)),
+            sync_guard: Mutex::new(()),
+            allow_shell_actions: std::env::var(SHELL_ACTION_OPT_IN).as_deref() == Ok("1"),
             config_path,
             asset_root,
             project_root,
@@ -339,9 +385,24 @@ impl AppCore {
                 self.driver.set_state(self, status, error);
             }
             Some("input") => {
+                if !valid_hardware_input(&message) {
+                    return;
+                }
+                if self
+                    .pending_hardware_events
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+                        (pending < MAX_PENDING_HARDWARE_EVENTS).then_some(pending + 1)
+                    })
+                    .is_err()
+                {
+                    return;
+                }
                 self.emit(message.clone());
                 let core = self.clone();
-                thread::spawn(move || core.handle_hardware_input(message));
+                thread::spawn(move || {
+                    core.clone().handle_hardware_input(message);
+                    core.pending_hardware_events.fetch_sub(1, Ordering::AcqRel);
+                });
             }
             _ => {
                 if let Some(object) = message.as_object_mut() {
@@ -367,6 +428,7 @@ impl AppCore {
                     "product": fallback(read_text(path.join("product")), "VSDinside N1"),
                     "busPath": entry.file_name().to_string_lossy(),
                     "transportReady": driver.status == "ready",
+                    "shellActionsEnabled": self.allow_shell_actions,
                     "driver": driver
                 });
             }
@@ -377,11 +439,17 @@ impl AppCore {
             "productId": USB_PRODUCT_ID,
             "product": "VSDinside N1",
             "transportReady": false,
+            "shellActionsEnabled": self.allow_shell_actions,
             "driver": driver
         })
     }
 
     fn sync(self: &Arc<Self>, payload: Value) -> Result<Value, String> {
+        let _sync = self
+            .sync_guard
+            .try_lock()
+            .map_err(|_| "A device sync is already in progress".to_string())?;
+        validate_sync_payload(&payload)?;
         let keys = payload
             .get("keys")
             .and_then(Value::as_array)
@@ -470,6 +538,9 @@ impl AppCore {
             "image/webp" => ".webp",
             _ => return Err("Choose a PNG, JPEG, GIF, or WebP image".into()),
         };
+        if encoded.len() > MAX_ASSET_BYTES.saturating_mul(4).div_ceil(3) + 1024 {
+            return Err("Icon files must be no larger than 5 MB".into());
+        }
         let encoded = encoded
             .chars()
             .filter(|character| !character.is_whitespace())
@@ -597,12 +668,7 @@ impl AppCore {
     }
 
     fn safe_asset_path(&self, id: &str) -> Result<PathBuf, String> {
-        let (digest, extension) = id.split_at_checked(64).ok_or("Invalid icon asset ID")?;
-        if !digest
-            .chars()
-            .all(|character| character.is_ascii_hexdigit())
-            || (!IMAGE_EXTENSIONS.contains(&extension) && !SOUND_EXTENSIONS.contains(&extension))
-        {
+        if !valid_stored_asset_id(id) {
             return Err("Invalid stored asset ID".into());
         }
         Ok(self.asset_root.join(id))
@@ -667,7 +733,14 @@ impl AppCore {
         Ok(materialized)
     }
 
-    fn test_action(&self, key: i64, action: Value) -> Result<Value, String> {
+    fn test_action(&self, key: i64, action: TestActionInput) -> Result<Value, String> {
+        if !(1..=15).contains(&key) {
+            return Err("Action key must be between 1 and 15".into());
+        }
+        if !self.accept_hardware_action("ipc:test-action", Duration::from_millis(100)) {
+            return Err("Action tests are rate limited; wait briefly and try again".into());
+        }
+        let action = validated_test_action(action)?;
         self.execute_action(&action, key)?;
         Ok(json!({"ok": true}))
     }
@@ -698,8 +771,12 @@ impl AppCore {
         }
         let resolved = if is_sound {
             self.resolve_sound_commands(action)
+        } else if is_shell_action(action) && !self.allow_shell_actions {
+            Err(format!(
+                "Shell actions are disabled. Set {SHELL_ACTION_OPT_IN}=1 before starting Studio to opt in."
+            ))
         } else {
-            resolve_action_command(action)
+            resolve_action_command(action, self.allow_shell_actions)
                 .map(|command| vec![command])
                 .ok_or_else(|| "This action needs a command or integration target".to_string())
         };
@@ -718,15 +795,31 @@ impl AppCore {
         };
         let mut last_error = None;
         for resolved in commands {
+            let reserved_process = !is_sound
+                && self
+                    .active_action_processes
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                        (active < MAX_ACTIVE_ACTION_PROCESSES).then_some(active + 1)
+                    })
+                    .is_ok();
+            if !is_sound && !reserved_process {
+                last_error = Some(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "Too many actions are already running",
+                ));
+                continue;
+            }
             match spawn_resolved_action(&resolved, &self.project_root) {
                 Ok(child) => {
                     if is_sound {
                         let replay = loop_sound_until_pressed(action).then_some(resolved);
                         self.track_sound(key, child, replay);
                     } else {
+                        let active_action_processes = self.active_action_processes.clone();
                         thread::spawn(move || {
                             let mut child = child;
                             let _ = child.wait();
+                            active_action_processes.fetch_sub(1, Ordering::AcqRel);
                         });
                     }
                     self.emit(json!({
@@ -739,7 +832,12 @@ impl AppCore {
                     }));
                     return Ok(());
                 }
-                Err(error) => last_error = Some(error),
+                Err(error) => {
+                    if reserved_process {
+                        self.active_action_processes.fetch_sub(1, Ordering::AcqRel);
+                    }
+                    last_error = Some(error);
+                }
             }
         }
         let error = if is_sound {
@@ -767,10 +865,12 @@ impl AppCore {
         let project_root = self.project_root.clone();
         thread::spawn(move || {
             let mut completion = None;
+            let mut consecutive_failures = 0_u32;
             'playback: loop {
-                loop {
+                let started = Instant::now();
+                let successful = loop {
                     match child.try_wait() {
-                        Ok(Some(_)) => break,
+                        Ok(Some(status)) => break status.success(),
                         Err(_) => break 'playback,
                         Ok(None) => {}
                     }
@@ -788,12 +888,25 @@ impl AppCore {
                         }
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
                     }
-                }
+                };
 
                 let Some(replay) = replay.as_ref() else {
                     break;
                 };
-                match stop_requested.recv_timeout(Duration::from_millis(15)) {
+                if successful {
+                    consecutive_failures = 0;
+                } else {
+                    consecutive_failures += 1;
+                    if consecutive_failures >= 3 {
+                        break;
+                    }
+                }
+                let delay = if successful {
+                    Duration::from_millis(100).saturating_sub(started.elapsed())
+                } else {
+                    Duration::from_millis(250 * u64::from(consecutive_failures))
+                };
+                match stop_requested.recv_timeout(delay) {
                     Ok(complete) => {
                         completion = Some(complete);
                         break 'playback;
@@ -855,6 +968,9 @@ impl AppCore {
     fn handle_hardware_input(self: Arc<Self>, event: Value) {
         match event.get("type").and_then(Value::as_str) {
             Some("knob_rotate") => {
+                if !self.accept_hardware_action("knob:rotate", Duration::from_millis(20)) {
+                    return;
+                }
                 let step = if event.get("direction").and_then(Value::as_str) == Some("right") {
                     "5%+"
                 } else {
@@ -868,6 +984,9 @@ impl AppCore {
                 return;
             }
             Some("knob_press") if event.get("state").and_then(Value::as_i64) == Some(1) => {
+                if !self.accept_hardware_action("knob:press", Duration::from_millis(120)) {
+                    return;
+                }
                 self.run_fixed_action(
                     "wpctl",
                     &["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"],
@@ -919,8 +1038,32 @@ impl AppCore {
         }
 
         if state == 1 {
+            if !self.accept_hardware_action("button:global", Duration::from_millis(100))
+                || !self.accept_hardware_action(
+                    &format!("button:{key_number}"),
+                    Duration::from_millis(120),
+                )
+            {
+                return;
+            }
             let _ = self.execute_action(&action, key_number as i64);
         }
+    }
+
+    fn accept_hardware_action(&self, id: &str, cooldown: Duration) -> bool {
+        let now = Instant::now();
+        let mut recent = lock(&self.recent_hardware_actions);
+        if recent
+            .get(id)
+            .is_some_and(|previous| now.duration_since(*previous) < cooldown)
+        {
+            return false;
+        }
+        recent.insert(id.to_string(), now);
+        if recent.len() > 32 {
+            recent.retain(|_, seen| now.duration_since(*seen) < Duration::from_secs(5));
+        }
+        true
     }
 
     fn apply_key_visual_state(
@@ -956,13 +1099,11 @@ impl AppCore {
     }
 
     fn run_fixed_action(&self, program: &str, args: &[&str], name: &str) {
-        if let Err(error) = Command::new(program)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        {
+        let resolved = ResolvedAction {
+            program: program.into(),
+            args: args.iter().map(|value| (*value).into()).collect(),
+        };
+        if let Err(error) = spawn_resolved_action(&resolved, &self.project_root) {
             self.emit(json!({
                 "event": "action",
                 "ok": false,
@@ -980,9 +1121,15 @@ struct ResolvedAction {
 }
 
 fn spawn_resolved_action(resolved: &ResolvedAction, project_root: &Path) -> std::io::Result<Child> {
-    let mut command = Command::new(&resolved.program);
+    let program = trusted_program_path(&resolved.program)?;
+    let mut command = Command::new(program);
     command
         .args(&resolved.args)
+        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .env_remove("BASH_ENV")
+        .env_remove("CDPATH")
+        .env_remove("ENV")
+        .env_remove("SHELLOPTS")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -990,6 +1137,52 @@ fn spawn_resolved_action(resolved: &ResolvedAction, project_root: &Path) -> std:
         command.current_dir(project_root);
     }
     command.spawn()
+}
+
+fn trusted_program_path(program: &str) -> std::io::Result<PathBuf> {
+    let requested = Path::new(program);
+    if requested.is_absolute() {
+        if requested == Path::new("/bin/sh") && is_executable(requested) {
+            return Ok(requested.to_path_buf());
+        }
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "absolute executable path is not allowed",
+        ));
+    }
+    if program.is_empty() || program.contains('/') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid executable name",
+        ));
+    }
+    TRUSTED_PROGRAM_DIRS
+        .iter()
+        .map(|directory| Path::new(directory).join(program))
+        .find(|candidate| is_executable(candidate))
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("{program} was not found in a trusted system directory"),
+            )
+        })
+}
+
+fn is_executable(path: &Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        metadata.is_file()
+            && metadata.uid() == 0
+            && metadata.permissions().mode() & 0o111 != 0
+            && metadata.permissions().mode() & 0o022 == 0
+    }
+    #[cfg(not(unix))]
+    {
+        metadata.is_file()
+    }
 }
 
 fn sound_player_commands(path: &Path) -> Vec<ResolvedAction> {
@@ -1022,15 +1215,8 @@ fn sound_player_commands(path: &Path) -> Vec<ResolvedAction> {
     commands
 }
 
-fn resolve_action_command(action: &Value) -> Option<ResolvedAction> {
-    let explicit = action
-        .get("command")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim();
-    if !explicit.is_empty() {
-        return Some(shell_action(explicit));
-    }
+fn resolve_action_command(action: &Value, allow_shell_actions: bool) -> Option<ResolvedAction> {
+    let id = action.get("id").and_then(Value::as_str)?;
     let target = action
         .get("target")
         .and_then(Value::as_str)
@@ -1040,7 +1226,7 @@ fn resolve_action_command(action: &Value) -> Option<ResolvedAction> {
         program: program.into(),
         args: args.iter().map(|value| (*value).into()).collect(),
     };
-    match action.get("id").and_then(Value::as_str)? {
+    match id {
         "mic" => Some(fixed(
             "wpctl",
             &["set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"],
@@ -1057,8 +1243,22 @@ fn resolve_action_command(action: &Value) -> Option<ResolvedAction> {
         "folder" if target.starts_with('/') || target.starts_with("file:") => {
             Some(fixed("xdg-open", &[target]))
         }
-        "launch" | "command" | "hotkey" if valid_shell_target(target) => Some(shell_action(target)),
-        id if id.starts_with("custom-") && valid_shell_target(target) => Some(shell_action(target)),
+        "launch" | "command" | "hotkey" if allow_shell_actions => {
+            let command = action
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or(target)
+                .trim();
+            valid_shell_target(command).then(|| shell_action(command))
+        }
+        id if id.starts_with("custom-") && allow_shell_actions => {
+            let command = action
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or(target)
+                .trim();
+            valid_shell_target(command).then(|| shell_action(command))
+        }
         _ => None,
     }
 }
@@ -1066,8 +1266,14 @@ fn resolve_action_command(action: &Value) -> Option<ResolvedAction> {
 fn shell_action(command: &str) -> ResolvedAction {
     ResolvedAction {
         program: "/bin/sh".into(),
-        args: vec!["-lc".into(), command.into()],
+        args: vec!["-c".into(), command.into()],
     }
+}
+
+fn is_shell_action(action: &Value) -> bool {
+    action.get("id").and_then(Value::as_str).is_some_and(|id| {
+        matches!(id, "launch" | "command" | "hotkey") || id.starts_with("custom-")
+    })
 }
 
 fn valid_shell_target(target: &str) -> bool {
@@ -1117,6 +1323,209 @@ fn clamped_number(value: Option<&Value>, default: u64) -> u64 {
         .clamp(0, 100)
 }
 
+fn validated_test_action(input: TestActionInput) -> Result<Value, String> {
+    if !valid_action_id(&input.id) {
+        return Err("Unsupported action type".into());
+    }
+    let target = input.target.unwrap_or_default();
+    if target.len() > 2_048 {
+        return Err("Action targets must be no longer than 2,048 bytes".into());
+    }
+    let behavior = input.sound_press_behavior.unwrap_or_else(|| "stop".into());
+    if !matches!(behavior.as_str(), "stop" | "restart") {
+        return Err("Invalid sound press behavior".into());
+    }
+    let mut action = json!({
+        "id": input.id,
+        "target": target,
+        "soundPressBehavior": behavior,
+        "soundLoop": input.sound_loop.unwrap_or(false)
+    });
+    if let Some(id) = input.sound_id {
+        if !valid_stored_asset_id(&id) || !has_asset_extension(&id, SOUND_EXTENSIONS) {
+            return Err("Invalid sound asset ID".into());
+        }
+        let name = input
+            .sound_name
+            .unwrap_or_else(|| "sound".into())
+            .chars()
+            .take(120)
+            .collect::<String>();
+        action["sound"] = json!({"id": id, "name": name});
+    }
+    Ok(action)
+}
+
+fn validate_sync_payload(payload: &Value) -> Result<(), String> {
+    let encoded = serde_json::to_vec(payload).map_err(error_text)?;
+    if encoded.len() > MAX_SYNC_BYTES {
+        return Err("Sync payload is too large".into());
+    }
+    validate_json_limits(payload, 0)?;
+    let profile = payload
+        .get("profile")
+        .and_then(Value::as_str)
+        .unwrap_or("streaming");
+    if profile.is_empty()
+        || profile.len() > 64
+        || !profile
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || " _-".contains(character))
+    {
+        return Err("Invalid profile name".into());
+    }
+    let keys = payload
+        .get("keys")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Sync payload must contain a keys array".to_string())?;
+    if keys.len() != 15 {
+        return Err("Sync payload must contain exactly 15 keys".into());
+    }
+    for key in keys.iter().filter(|key| !key.is_null()) {
+        let object = key
+            .as_object()
+            .ok_or_else(|| "Each configured key must be an object".to_string())?;
+        let id = object
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Each configured key must have an action type".to_string())?;
+        if !valid_action_id(id) {
+            return Err(format!("Unsupported action type: {id}"));
+        }
+        if let Some(color) = object.get("color").and_then(Value::as_str)
+            && !valid_color(color)
+        {
+            return Err("Key colors must use six-digit hexadecimal notation".into());
+        }
+        if let Some(sound_id) = key.pointer("/sound/id").and_then(Value::as_str)
+            && (!valid_stored_asset_id(sound_id)
+                || !has_asset_extension(sound_id, SOUND_EXTENSIONS))
+        {
+            return Err("Invalid sound asset ID".into());
+        }
+        for pointer in ["/visuals/primary/id", "/visuals/secondary/id"] {
+            if let Some(asset_id) = key.pointer(pointer).and_then(Value::as_str)
+                && (!valid_stored_asset_id(asset_id)
+                    || !has_asset_extension(asset_id, IMAGE_EXTENSIONS))
+            {
+                return Err("Invalid icon asset ID".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_json_limits(value: &Value, depth: usize) -> Result<(), String> {
+    if depth > MAX_JSON_DEPTH {
+        return Err("Configuration is nested too deeply".into());
+    }
+    match value {
+        Value::String(text) if text.len() > MAX_JSON_STRING_BYTES => {
+            Err("Configuration contains an oversized text field".into())
+        }
+        Value::Array(values) => {
+            if values.len() > 18 {
+                return Err("Configuration contains an oversized list".into());
+            }
+            for value in values {
+                validate_json_limits(value, depth + 1)?;
+            }
+            Ok(())
+        }
+        Value::Object(values) => {
+            if values.len() > 32 {
+                return Err("Configuration contains an oversized object".into());
+            }
+            for (name, value) in values {
+                if name.len() > 64 {
+                    return Err("Configuration contains an oversized field name".into());
+                }
+                validate_json_limits(value, depth + 1)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn valid_action_id(id: &str) -> bool {
+    matches!(
+        id,
+        "scene"
+            | "mic"
+            | "volume"
+            | "record"
+            | "chat"
+            | "launch"
+            | "hotkey"
+            | "command"
+            | "folder"
+            | "website"
+            | "sound"
+            | "music"
+            | "lock"
+    ) || (id.starts_with("custom-")
+        && id.len() > "custom-".len()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-'))
+}
+
+fn valid_color(color: &str) -> bool {
+    color.len() == 7
+        && color.starts_with('#')
+        && color[1..]
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+}
+
+fn valid_stored_asset_id(id: &str) -> bool {
+    let Some((digest, extension)) = id.split_at_checked(64) else {
+        return false;
+    };
+    digest
+        .chars()
+        .all(|character| character.is_ascii_hexdigit())
+        && (IMAGE_EXTENSIONS.contains(&extension) || SOUND_EXTENSIONS.contains(&extension))
+}
+
+fn valid_hardware_input(message: &Value) -> bool {
+    match message.get("type").and_then(Value::as_str) {
+        Some("button") => {
+            message
+                .get("key")
+                .and_then(Value::as_u64)
+                .is_some_and(|key| (1..=15).contains(&key))
+                && message
+                    .get("state")
+                    .and_then(Value::as_i64)
+                    .is_some_and(|state| matches!(state, 0 | 1))
+        }
+        Some("knob_rotate") => {
+            message.get("knob").and_then(Value::as_str) == Some("knob_1")
+                && message
+                    .get("direction")
+                    .and_then(Value::as_str)
+                    .is_some_and(|direction| matches!(direction, "left" | "right"))
+        }
+        Some("knob_press") => {
+            message.get("knob").and_then(Value::as_str) == Some("knob_1")
+                && message
+                    .get("state")
+                    .and_then(Value::as_i64)
+                    .is_some_and(|state| matches!(state, 0 | 1))
+        }
+        _ => false,
+    }
+}
+
+fn set_private_directory(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(error_text)?;
+    Ok(())
+}
+
 fn read_text(path: PathBuf) -> String {
     fs::read_to_string(path)
         .map(|text| text.trim().to_string())
@@ -1132,9 +1541,13 @@ fn fallback(value: String, fallback: &str) -> String {
 }
 
 fn read_json(path: &Path) -> Option<Value> {
+    if path.metadata().ok()?.len() > MAX_SYNC_BYTES as u64 {
+        return None;
+    }
     fs::read_to_string(path)
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
+        .filter(|value| validate_sync_payload(value).is_ok())
 }
 
 fn write_json(path: &Path, value: &Value) -> Result<(), String> {
@@ -1164,16 +1577,47 @@ fn migrate_legacy_data(
 ) -> Result<(), String> {
     let legacy_config = project_root.join(".streamctrl-config.json");
     if !config_path.exists() && legacy_config.is_file() {
-        fs::copy(legacy_config, config_path).map_err(error_text)?;
+        let data = fs::read(&legacy_config).map_err(error_text)?;
+        if data.len() > MAX_SYNC_BYTES {
+            return Err("Legacy configuration is too large to migrate".into());
+        }
+        let value: Value = serde_json::from_slice(&data)
+            .map_err(|_| "Legacy configuration contains invalid JSON".to_string())?;
+        validate_sync_payload(&value)?;
+        write_json(config_path, &value)?;
     }
     let legacy_assets = project_root.join(".streamctrl-assets");
     if legacy_assets.is_dir() {
         for entry in fs::read_dir(legacy_assets).map_err(error_text)? {
             let entry = entry.map_err(error_text)?;
             if entry.path().is_file() {
-                let destination = asset_root.join(entry.file_name());
-                if !destination.exists() {
-                    fs::copy(entry.path(), destination).map_err(error_text)?;
+                let id = entry.file_name().to_string_lossy().into_owned();
+                if !valid_stored_asset_id(&id) {
+                    continue;
+                }
+                let data = fs::read(entry.path()).map_err(error_text)?;
+                let (digest, extension) = id.split_at(64);
+                let size_limit = if IMAGE_EXTENSIONS.contains(&extension) {
+                    MAX_ASSET_BYTES
+                } else {
+                    MAX_SOUND_BYTES
+                };
+                if data.is_empty()
+                    || data.len() > size_limit
+                    || hex::encode(Sha256::digest(&data)) != digest
+                {
+                    continue;
+                }
+                let valid_signature = match extension {
+                    ".gif" => valid_image_signature("image/gif", &data),
+                    ".jpg" | ".jpeg" => valid_image_signature("image/jpeg", &data),
+                    ".png" => valid_image_signature("image/png", &data),
+                    ".webp" => valid_image_signature("image/webp", &data),
+                    extension => valid_sound_signature(extension, &data),
+                };
+                let destination = asset_root.join(&id);
+                if valid_signature && !destination.exists() {
+                    write_private_file(&destination, &data)?;
                 }
             }
         }
@@ -1291,7 +1735,11 @@ async fn identify_device(state: State<'_, AppState>, brightness: i64) -> Result<
 }
 
 #[tauri::command]
-fn test_action(state: State<'_, AppState>, key: i64, action: Value) -> Result<Value, String> {
+fn test_action(
+    state: State<'_, AppState>,
+    key: i64,
+    action: TestActionInput,
+) -> Result<Value, String> {
     state.0.test_action(key, action)
 }
 
@@ -1466,27 +1914,92 @@ mod tests {
     }
 
     #[test]
-    fn resolves_only_explicit_or_safe_builtin_actions() {
+    fn resolves_only_enabled_shell_or_safe_builtin_actions() {
         assert!(
-            resolve_action_command(&json!({
-                "id": "website",
-                "target": "https://example.com"
-            }))
+            resolve_action_command(
+                &json!({
+                    "id": "website",
+                    "target": "https://example.com"
+                }),
+                false
+            )
             .is_some()
         );
         assert!(
-            resolve_action_command(&json!({
-                "id": "website",
-                "target": "javascript:alert(1)"
-            }))
+            resolve_action_command(
+                &json!({
+                    "id": "website",
+                    "target": "javascript:alert(1)"
+                }),
+                false
+            )
             .is_none()
         );
         assert!(
-            resolve_action_command(&json!({
-                "id": "command",
-                "target": "Choose a command"
-            }))
+            resolve_action_command(
+                &json!({
+                    "id": "command",
+                    "target": "notify-send hello"
+                }),
+                false
+            )
             .is_none()
         );
+        let command = resolve_action_command(
+            &json!({"id": "command", "target": "notify-send hello"}),
+            true,
+        )
+        .expect("explicitly enabled shell action");
+        assert_eq!(command.program, "/bin/sh");
+        assert_eq!(command.args, ["-c", "notify-send hello"]);
+
+        let builtin = resolve_action_command(
+            &json!({"id": "mic", "command": "touch /tmp/should-not-run"}),
+            true,
+        )
+        .expect("built-in action");
+        assert_eq!(builtin.program, "wpctl");
+        assert!(!builtin.args.join(" ").contains("touch"));
+    }
+
+    #[test]
+    fn validates_bounded_sync_payloads() {
+        let valid = json!({
+            "profile": "streaming",
+            "page": 1,
+            "brightness": 80,
+            "keys": vec![Value::Null; 15]
+        });
+        assert!(validate_sync_payload(&valid).is_ok());
+        assert!(
+            validate_sync_payload(&json!({
+                "profile": "streaming",
+                "keys": vec![Value::Null; 16]
+            }))
+            .is_err()
+        );
+        let malicious_key = json!({
+            "id": "mic",
+            "color": "red; background: url(https://example.com)"
+        });
+        assert!(
+            validate_sync_payload(
+                &json!({"profile": "streaming", "keys": vec![malicious_key; 15]})
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn validates_hardware_event_shape() {
+        assert!(valid_hardware_input(
+            &json!({"type": "button", "key": 1, "state": 1})
+        ));
+        assert!(!valid_hardware_input(
+            &json!({"type": "button", "key": 99, "state": 1})
+        ));
+        assert!(!valid_hardware_input(
+            &json!({"type": "knob_rotate", "knob": "knob_1", "direction": "up"})
+        ));
     }
 }

@@ -27,6 +27,7 @@ HASH_FILE="${SIDECAR}.sha256"
 SOURCE_HASH="$(
   sha256sum \
     "${PROJECT_DIR}/driver/n1_service.py" \
+    "${PROJECT_DIR}/driver/build-requirements.txt" \
     "${PROJECT_DIR}/driver/requirements.txt" |
     sha256sum |
     cut -d ' ' -f 1
@@ -37,7 +38,8 @@ if [[ -x "${SIDECAR}" && -f "${HASH_FILE}" && "$(<"${HASH_FILE}")" == "${SOURCE_
 fi
 
 if ! "${VENV_PYTHON}" -m PyInstaller --version >/dev/null 2>&1; then
-  "${VENV_PYTHON}" -m pip install pyinstaller
+  echo "The pinned PyInstaller build dependency is missing. Run npm run setup:driver." >&2
+  exit 1
 fi
 
 mkdir -p "${BIN_DIR}" "${BUILD_DIR}"

@@ -15,8 +15,9 @@ stream controller.
 ## Install the latest release
 
 On x86_64 Debian, Ubuntu, or Linux Mint, the installer downloads the newest published
-Debian package, validates it, installs its dependencies, and configures N1 USB
-permissions:
+Debian package, verifies its checksum and signed GitHub Actions provenance, installs
+its dependencies, and configures N1 USB permissions. A current GitHub CLI with
+`gh attestation verify` support is required:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/plasticparticle/n1-stream-controller-studio/main/install.sh \
@@ -34,7 +35,9 @@ bash install.sh --accept-alpha-risk
 
 Use `--version TAG` to install a particular release or `--dry-run` to download and
 validate it without changing the system. Running the installer again upgrades an
-existing installation.
+existing installation. The unsafe `--skip-attestation` escape hatch is available for
+development releases whose provenance cannot be retrieved, but it should not be used
+for normal installation.
 
 ## Native architecture
 
@@ -66,7 +69,7 @@ Install Node.js (which includes npm), Python, and the native Linux build depende
 ```bash
 sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
   libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf \
-  nodejs python3 python3-venv git
+  nodejs python3.12 python3.12-venv git
 ```
 
 > **Rust is required:** Install it from the
@@ -139,7 +142,8 @@ transferred automatically; uploaded animations start after the queued transfer c
 - Supports static and animated custom icons with momentary or toggle states
 - Plays assigned WAV, MP3, OGG, and FLAC files with stop, restart, and continuous-loop modes
 - Listens for buttons and rotary-dial events through the vendor HID interface
-- Runs explicit shell actions and built-in Linux media/session actions on key presses
+- Runs built-in Linux media/session actions on key presses
+- Supports explicit shell actions through a disabled-by-default operator opt-in
 - Streams hardware and action status directly into the native UI
 
 Layout changes are saved locally immediately and transferred to the N1 automatically.
@@ -149,6 +153,19 @@ as an error and queued changes are retained until the device reconnects.
 The hardware service monitors the N1 connection continuously. If the USB cable is
 removed, Studio releases the stale HID handle and automatically opens the controller
 again after it is reconnected. Restarting Studio is not required.
+
+## Shell action security
+
+Custom commands, launch actions, and hotkey command strings execute with your user
+account and are disabled by default. To opt in for a trusted local profile, start
+Studio explicitly with:
+
+```bash
+N1_STUDIO_ALLOW_SHELL_ACTIONS=1 n1-stream-controller-studio
+```
+
+Built-in actions, websites, folders, and sound playback do not require this opt-in.
+Do not enable shell actions for profiles you did not create and inspect yourself.
 
 ## Commands
 

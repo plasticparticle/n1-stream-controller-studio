@@ -39,7 +39,18 @@ const backend = {
     return this.invoke("start_window_drag");
   },
   testAction(key, action) {
-    return this.invoke("test_action", { key, action });
+    const sound = action?.sound;
+    return this.invoke("test_action", {
+      key,
+      action: {
+        id: String(action?.id || ""),
+        target: String(action?.command || action?.target || "").slice(0, 2048),
+        soundId: sound?.id || null,
+        soundName: sound?.name || null,
+        soundPressBehavior: action?.soundPressBehavior || "stop",
+        soundLoop: action?.soundLoop === true
+      }
+    });
   },
   resolveAsset(assetId) {
     return this.invoke("resolve_asset", { assetId });
@@ -74,8 +85,8 @@ const icons = {
 
 const actionCatalog = [
   { id: "scene", name: "Switch Scene", subtitle: "OBS Studio", description: "Scene: Starting Soon", icon: "camera", color: "#37b7ff", category: "stream", group: "Streaming" },
-  { id: "mic", name: "Mute Microphone", subtitle: "Audio control", description: "Default microphone", command: "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle", icon: "mic", color: "#ef476f", category: "stream", group: "Streaming" },
-  { id: "volume", name: "Mute Speakers", subtitle: "Audio control", description: "Default speakers", command: "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle", icon: "volume", color: "#38d996", category: "stream", group: "Streaming" },
+  { id: "mic", name: "Mute Microphone", subtitle: "Audio control", description: "Default microphone", icon: "mic", color: "#ef476f", category: "stream", group: "Streaming" },
+  { id: "volume", name: "Mute Speakers", subtitle: "Audio control", description: "Default speakers", icon: "volume", color: "#38d996", category: "stream", group: "Streaming" },
   { id: "record", name: "Start Recording", subtitle: "OBS Studio", description: "Toggle recording", icon: "record", color: "#ef476f", category: "stream", group: "Streaming" },
   { id: "chat", name: "Show Chat", subtitle: "Browser dock", description: "Open stream chat", icon: "message", color: "#a78bfa", category: "stream", group: "Streaming" },
   { id: "launch", name: "Launch App", subtitle: "Applications", description: "Choose an application", icon: "app", color: "#38d996", category: "system", group: "Desktop" },
@@ -84,8 +95,8 @@ const actionCatalog = [
   { id: "folder", name: "Open Folder", subtitle: "Files", description: "Open a local folder", icon: "folder", color: "#37b7ff", category: "system", group: "Desktop" },
   { id: "website", name: "Open Website", subtitle: "Browser", description: "Open URL", icon: "web", color: "#a78bfa", category: "system", group: "Navigation" },
   { id: "sound", name: "Play Sound", subtitle: "Local audio", description: "Choose a sound file", soundPressBehavior: "stop", soundLoop: false, icon: "sound", color: "#37b7ff", category: "system", group: "Navigation" },
-  { id: "music", name: "Play / Pause", subtitle: "Media", description: "System media control", command: "playerctl play-pause", icon: "music", color: "#38d996", category: "system", group: "Navigation" },
-  { id: "lock", name: "Lock Screen", subtitle: "Linux", description: "Lock this session", command: "loginctl lock-session", icon: "lock", color: "#e8ff58", category: "system", group: "Navigation" }
+  { id: "music", name: "Play / Pause", subtitle: "Media", description: "System media control", icon: "music", color: "#38d996", category: "system", group: "Navigation" },
+  { id: "lock", name: "Lock Screen", subtitle: "Linux", description: "Lock this session", icon: "lock", color: "#e8ff58", category: "system", group: "Navigation" }
 ];
 
 const layouts = {
@@ -122,6 +133,7 @@ let toastTimer;
 let dialValue = 20;
 let deviceDetected = false;
 let hardwareTransportReady = false;
+let shellActionsEnabled = false;
 let hardwarePageSwitching = false;
 let deckSyncInProgress = false;
 let autoSyncTimer = null;
@@ -190,13 +202,17 @@ const currentPageByProfile = Object.fromEntries(
 let restoredSavedLayouts = false;
 
 try {
-  const savedPageState = JSON.parse(localStorage.getItem(pageStorageKey) || "null");
+  const savedPageJson = localStorage.getItem(pageStorageKey) || "null";
+  const savedPageState = savedPageJson.length <= 1_000_000
+    ? JSON.parse(savedPageJson)
+    : null;
   if (savedPageState?.profiles && typeof savedPageState.profiles === "object") {
     Object.keys(layouts).forEach((profile) => {
       const savedPages = savedPageState.profiles[profile];
       if (
         Array.isArray(savedPages) &&
         savedPages.length > 0 &&
+        savedPages.length <= 99 &&
         savedPages.every((page) => Array.isArray(page) && page.length === 15)
       ) {
         pageLayouts[profile] = savedPages;
@@ -213,7 +229,9 @@ try {
   } else {
     const savedLayoutJson =
       localStorage.getItem(layoutStorageKey) || localStorage.getItem(legacyLayoutStorageKey);
-    const savedLayouts = JSON.parse(savedLayoutJson || "null");
+    const savedLayouts = (savedLayoutJson || "").length <= 1_000_000
+      ? JSON.parse(savedLayoutJson || "null")
+      : null;
     if (savedLayouts && typeof savedLayouts === "object") {
       Object.keys(layouts).forEach((profile) => {
         if (Array.isArray(savedLayouts[profile]) && savedLayouts[profile].length === 15) {
@@ -323,16 +341,21 @@ function keyScreenMarkup(key, secondary = false) {
   if (!key) return '<div class="key-screen empty"><span class="empty-plus">+</span></div>';
   const visual = selectedVisual(key, secondary);
   const previewUrl = assetPreviewUrl(visual);
+  const color = safeColor(key.color);
   if (previewUrl) {
-    return `<div class="key-screen has-custom-icon" style="--key-color:${escapeHtml(key.color)}"><img src="${escapeHtml(previewUrl)}" alt="" draggable="false"><span class="key-label">${escapeHtml(key.title)}</span></div>`;
+    return `<div class="key-screen has-custom-icon" style="--key-color:${color}"><img src="${escapeHtml(previewUrl)}" alt="" draggable="false"><span class="key-label">${escapeHtml(key.title)}</span></div>`;
   }
-  return `<div class="key-screen" style="--key-color:${key.color}">${iconMarkup(key.icon)}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
+  return `<div class="key-screen" style="--key-color:${color}">${iconMarkup(key.icon)}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
 }
 
 function escapeHtml(value) {
   return String(value || "").replace(/[&<>"']/g, (char) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
   })[char]);
+}
+
+function safeColor(value, fallback = "#37b7ff") {
+  return /^#[0-9a-f]{6}$/i.test(String(value || "")) ? String(value) : fallback;
 }
 
 function formatFileSize(bytes) {
@@ -463,30 +486,55 @@ function renderActions() {
     return matchesCategory && matchesQuery;
   });
   const groups = [...new Set(filtered.map((action) => action.group))];
+  actionGroups.replaceChildren();
+  if (!groups.length) {
+    const empty = document.createElement("p");
+    empty.className = "drag-hint";
+    empty.textContent = "No matching actions found.";
+    actionGroups.append(empty);
+    return;
+  }
 
-  actionGroups.innerHTML = groups.length
-    ? groups.map((group) => `
-      <section class="action-group">
-        <p class="group-label">${group.toUpperCase()} <span></span></p>
-        ${filtered.filter((action) => action.group === group).map((action) => `
-          <button class="action-item" draggable="true" data-action="${action.id}">
-            <span class="action-icon" style="--icon-color:${action.color}">${iconMarkup(action.icon)}</span>
-            <span><strong>${action.name}</strong><small>${action.subtitle}</small></span>
-            <span class="drag-grip">${icons.layers}</span>
-          </button>
-        `).join("")}
-      </section>
-    `).join("")
-    : '<p class="drag-hint">No matching actions found.</p>';
+  groups.forEach((group) => {
+    const section = document.createElement("section");
+    section.className = "action-group";
+    const label = document.createElement("p");
+    label.className = "group-label";
+    label.append(document.createTextNode(`${String(group).toUpperCase()} `), document.createElement("span"));
+    section.append(label);
 
-  document.querySelectorAll(".action-item").forEach((item) => {
-    item.addEventListener("click", () => assignAction(selectedIndex, item.dataset.action));
-    item.addEventListener("dragstart", (event) => {
-      item.classList.add("dragging");
-      event.dataTransfer.setData("text/plain", item.dataset.action);
-      event.dataTransfer.effectAllowed = "copy";
+    filtered.filter((action) => action.group === group).forEach((action) => {
+      const item = document.createElement("button");
+      item.className = "action-item";
+      item.draggable = true;
+      item.dataset.action = action.id;
+
+      const icon = document.createElement("span");
+      icon.className = "action-icon";
+      icon.style.setProperty("--icon-color", safeColor(action.color));
+      icon.innerHTML = iconMarkup(action.icon);
+
+      const copy = document.createElement("span");
+      const name = document.createElement("strong");
+      const subtitle = document.createElement("small");
+      name.textContent = action.name;
+      subtitle.textContent = action.subtitle;
+      copy.append(name, subtitle);
+
+      const grip = document.createElement("span");
+      grip.className = "drag-grip";
+      grip.innerHTML = icons.layers;
+      item.append(icon, copy, grip);
+      item.addEventListener("click", () => assignAction(selectedIndex, item.dataset.action));
+      item.addEventListener("dragstart", (event) => {
+        item.classList.add("dragging");
+        event.dataTransfer.setData("text/plain", item.dataset.action);
+        event.dataTransfer.effectAllowed = "copy";
+      });
+      item.addEventListener("dragend", () => item.classList.remove("dragging"));
+      section.append(item);
     });
-    item.addEventListener("dragend", () => item.classList.remove("dragging"));
+    actionGroups.append(section);
   });
 }
 
@@ -505,7 +553,7 @@ function updateInspector() {
   document.querySelector("#assignedActionName").textContent = name;
   document.querySelector("#assignedActionDescription").textContent = description;
   document.querySelector("#assignedActionIcon").innerHTML = iconMarkup(key?.icon || "plus");
-  document.querySelector("#assignedActionIcon").style.setProperty("--icon-color", key?.color || "#667176");
+  document.querySelector("#assignedActionIcon").style.setProperty("--icon-color", safeColor(key?.color, "#667176"));
   const targetSelect = document.querySelector("#actionTarget");
   const actionValue = document.querySelector("#actionValue");
   const targetLabel = document.querySelector("#targetLabel");
@@ -744,6 +792,7 @@ async function detectDevice() {
     const device = await backend.device();
     deviceDetected = Boolean(device.connected);
     hardwareTransportReady = Boolean(device.transportReady);
+    shellActionsEnabled = device.shellActionsEnabled === true;
     const deviceButton = document.querySelector("#deviceButton");
     deviceButton.classList.toggle("disconnected", !deviceDetected);
     deviceButton.classList.toggle("transport-error", deviceDetected && !hardwareTransportReady);
@@ -1030,6 +1079,16 @@ document.querySelector("#testActionButton").addEventListener("click", async () =
   const action = activeLayout()[selectedIndex];
   if (!action) {
     showToast("Nothing to test", "Assign an action to this key first.");
+    return;
+  }
+  if (
+    !shellActionsEnabled &&
+    (["launch", "command", "hotkey"].includes(action.id) || action.id?.startsWith("custom-"))
+  ) {
+    showToast(
+      "Shell actions are disabled",
+      "Restart Studio with N1_STUDIO_ALLOW_SHELL_ACTIONS=1 after reviewing the command."
+    );
     return;
   }
   selected.animate(

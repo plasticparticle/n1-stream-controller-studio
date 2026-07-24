@@ -9,15 +9,19 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! command -v git >/dev/null 2>&1; then
-  echo "Git is required to install the vendor StreamDock SDK." >&2
+if ! python3 -c 'import sys; raise SystemExit(sys.version_info[:2] != (3, 12))'; then
+  echo "Python 3.12 is required for the pinned driver environment." >&2
   exit 1
 fi
 
 python3 -m venv "${VENV_DIR}"
-"${VENV_DIR}/bin/python" -m pip install --upgrade pip setuptools wheel
 "${VENV_DIR}/bin/python" -m pip install \
   --no-build-isolation \
+  --require-hashes \
+  -r "${PROJECT_DIR}/driver/build-requirements.txt"
+"${VENV_DIR}/bin/python" -m pip install \
+  --no-build-isolation \
+  --require-hashes \
   -r "${PROJECT_DIR}/driver/requirements.txt"
 
 echo

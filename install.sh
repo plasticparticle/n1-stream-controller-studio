@@ -9,7 +9,9 @@ readonly RULE_TARGET="/etc/udev/rules.d/99-streamctrl-n1.rules"
 ACCEPT_ALPHA_RISK="${N1_ACCEPT_ALPHA_RISK:-0}"
 REQUESTED_VERSION="${N1_VERSION:-}"
 DRY_RUN=0
+SKIP_ATTESTATION=0
 TEMP_DIR=""
+PACKAGE_FILE=""
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
   readonly BOLD=$'\033[1m'
@@ -55,6 +57,7 @@ Options:
   --accept-alpha-risk   Acknowledge that this is unsafe EARLY ALPHA software
   --version TAG         Install a specific GitHub release tag
   --dry-run             Download and validate the package without installing it
+  --skip-attestation    Skip signed provenance verification (unsafe)
   -h, --help            Show this help
 
 Environment alternatives:
@@ -66,7 +69,13 @@ EOF
 
 cleanup() {
   if [[ -n "${TEMP_DIR}" && -d "${TEMP_DIR}" ]]; then
-    rm -f -- "${TEMP_DIR}/release.json" "${TEMP_DIR}/studio.deb" "${TEMP_DIR}/udev.rules"
+    rm -f -- \
+      "${TEMP_DIR}/release.json" \
+      "${TEMP_DIR}/SHA256SUMS" \
+      "${TEMP_DIR}/udev.rules"
+    if [[ -n "${PACKAGE_FILE}" ]]; then
+      rm -f -- "${TEMP_DIR}/${PACKAGE_FILE}"
+    fi
     rmdir -- "${TEMP_DIR}" 2>/dev/null || true
   fi
 }
@@ -98,6 +107,10 @@ while (( $# > 0 )); do
       DRY_RUN=1
       shift
       ;;
+    --skip-attestation)
+      SKIP_ATTESTATION=1
+      shift
+      ;;
     -h | --help)
       usage
       exit 0
@@ -123,9 +136,11 @@ require_command curl
 require_command dpkg
 require_command dpkg-deb
 require_command apt-get
+require_command awk
 require_command install
 require_command mktemp
 require_command sed
+require_command sha256sum
 
 if (( EUID != 0 )); then
   require_command sudo
@@ -136,12 +151,12 @@ ARCHITECTURE="$(dpkg --print-architecture)"
   fail "No release package is available for ${ARCHITECTURE}; only amd64 is supported."
 
 if [[ -n "${REQUESTED_VERSION}" ]]; then
-  [[ "${REQUESTED_VERSION}" =~ ^[A-Za-z0-9._-]+$ ]] ||
+  [[ "${REQUESTED_VERSION}" =~ ^v[0-9]+(\.[0-9]+){2}([.+~-][A-Za-z0-9.+~-]+)?$ ]] ||
     fail "Invalid release tag: ${REQUESTED_VERSION}"
   RELEASE_ENDPOINT="${API_ROOT}/releases/tags/${REQUESTED_VERSION}"
   info "Looking up release ${REQUESTED_VERSION}…"
 else
-  RELEASE_ENDPOINT="${API_ROOT}/releases?per_page=20"
+  RELEASE_ENDPOINT="${API_ROOT}/releases/latest"
   info "Looking up the newest published release…"
 fi
 
@@ -164,6 +179,18 @@ if ! curl \
   fail "Could not retrieve release information from GitHub."
 fi
 
+RELEASE_TAG="$(
+  sed -nE \
+    's/^[[:space:]]*"tag_name":[[:space:]]*"([^"]+)".*/\1/p' \
+    "${TEMP_DIR}/release.json" |
+    sed -n '1p'
+)"
+[[ "${RELEASE_TAG}" =~ ^v[0-9]+(\.[0-9]+){2}([.+~-][A-Za-z0-9.+~-]+)?$ ]] ||
+  fail "GitHub returned an invalid release tag; refusing to continue."
+if [[ -n "${REQUESTED_VERSION}" && "${RELEASE_TAG}" != "${REQUESTED_VERSION}" ]]; then
+  fail "GitHub returned ${RELEASE_TAG}, not the requested ${REQUESTED_VERSION}."
+fi
+
 DOWNLOAD_URL="$(
   sed -nE \
     's/^[[:space:]]*"browser_download_url":[[:space:]]*"([^"]+_amd64\.deb)".*/\1/p' \
@@ -179,6 +206,23 @@ case "${DOWNLOAD_URL}" in
   *) fail "GitHub returned an unexpected download URL; refusing to continue." ;;
 esac
 
+PACKAGE_FILE="${DOWNLOAD_URL##*/}"
+[[ "${PACKAGE_FILE}" =~ ^n1-stream-controller-studio_[A-Za-z0-9.+:~-]+_amd64\.deb$ ]] ||
+  fail "GitHub returned an unexpected package filename; refusing to continue."
+
+CHECKSUM_URL="$(
+  sed -nE \
+    's/^[[:space:]]*"browser_download_url":[[:space:]]*"([^"]+/SHA256SUMS)".*/\1/p' \
+    "${TEMP_DIR}/release.json" |
+    sed -n '1p'
+)"
+[[ -n "${CHECKSUM_URL}" ]] ||
+  fail "The release has no SHA256SUMS file; refusing to install an unverified package."
+case "${CHECKSUM_URL}" in
+  "https://github.com/${REPOSITORY}/releases/download/"*/SHA256SUMS) ;;
+  *) fail "GitHub returned an unexpected checksum URL; refusing to continue." ;;
+esac
+
 info "Downloading the Debian package…"
 curl \
   --proto '=https' \
@@ -190,16 +234,57 @@ curl \
   --connect-timeout 15 \
   --progress-bar \
   "${DOWNLOAD_URL}" \
-  -o "${TEMP_DIR}/studio.deb"
+  -o "${TEMP_DIR}/${PACKAGE_FILE}"
 
-DOWNLOADED_NAME="$(dpkg-deb --field "${TEMP_DIR}/studio.deb" Package)"
-DOWNLOADED_VERSION="$(dpkg-deb --field "${TEMP_DIR}/studio.deb" Version)"
-DOWNLOADED_ARCH="$(dpkg-deb --field "${TEMP_DIR}/studio.deb" Architecture)"
+curl \
+  --proto '=https' \
+  --tlsv1.2 \
+  --fail \
+  --silent \
+  --show-error \
+  --location \
+  --retry 3 \
+  --connect-timeout 15 \
+  "${CHECKSUM_URL}" \
+  -o "${TEMP_DIR}/SHA256SUMS"
+
+info "Verifying the package checksum…"
+EXPECTED_SHA256="$(
+  awk -v package="${PACKAGE_FILE}" \
+    '$2 == package || $2 == "*" package { print $1; exit }' \
+    "${TEMP_DIR}/SHA256SUMS"
+)"
+[[ "${EXPECTED_SHA256}" =~ ^[a-fA-F0-9]{64}$ ]] ||
+  fail "The checksum manifest has no valid entry for ${PACKAGE_FILE}."
+ACTUAL_SHA256="$(sha256sum "${TEMP_DIR}/${PACKAGE_FILE}" | awk '{print $1}')"
+[[ "${ACTUAL_SHA256,,}" == "${EXPECTED_SHA256,,}" ]] ||
+  fail "The downloaded package checksum does not match the release manifest."
+
+if (( SKIP_ATTESTATION == 0 )); then
+  require_command gh
+  gh attestation verify --help >/dev/null 2>&1 ||
+    fail "GitHub CLI with 'gh attestation verify' support is required. Upgrade gh or explicitly use --skip-attestation."
+  info "Verifying signed GitHub Actions build provenance…"
+  GH_PROMPT_DISABLED=1 gh attestation verify \
+    "${TEMP_DIR}/${PACKAGE_FILE}" \
+    --repo "${REPOSITORY}" \
+    --signer-workflow "${REPOSITORY}/.github/workflows/release.yml" \
+    --source-ref "refs/tags/${RELEASE_TAG}" >/dev/null ||
+    fail "The package has no valid signed build provenance; refusing to install it."
+else
+  warn "Signed build provenance verification was explicitly skipped."
+fi
+
+DOWNLOADED_NAME="$(dpkg-deb --field "${TEMP_DIR}/${PACKAGE_FILE}" Package)"
+DOWNLOADED_VERSION="$(dpkg-deb --field "${TEMP_DIR}/${PACKAGE_FILE}" Version)"
+DOWNLOADED_ARCH="$(dpkg-deb --field "${TEMP_DIR}/${PACKAGE_FILE}" Architecture)"
 
 [[ "${DOWNLOADED_NAME}" == "${PACKAGE_NAME}" ]] ||
   fail "Downloaded package has an unexpected identity: ${DOWNLOADED_NAME}"
 [[ "${DOWNLOADED_ARCH}" == "${ARCHITECTURE}" ]] ||
   fail "Downloaded package is for ${DOWNLOADED_ARCH}, not ${ARCHITECTURE}."
+[[ "${RELEASE_TAG}" == "v${DOWNLOADED_VERSION}" ]] ||
+  fail "Downloaded package version ${DOWNLOADED_VERSION} does not match ${RELEASE_TAG}."
 
 success "Validated ${PACKAGE_NAME} ${DOWNLOADED_VERSION} (${DOWNLOADED_ARCH})."
 
@@ -214,10 +299,10 @@ else
   info "Installing ${PACKAGE_NAME} ${DOWNLOADED_VERSION}…"
 fi
 
-if ! run_as_root apt-get install -y "${TEMP_DIR}/studio.deb"; then
+if ! run_as_root apt-get install -y "${TEMP_DIR}/${PACKAGE_FILE}"; then
   warn "The package index may be stale; refreshing it and trying once more."
   run_as_root apt-get update
-  run_as_root apt-get install -y "${TEMP_DIR}/studio.deb"
+  run_as_root apt-get install -y "${TEMP_DIR}/${PACKAGE_FILE}"
 fi
 
 cat >"${TEMP_DIR}/udev.rules" <<'EOF'
