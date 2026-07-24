@@ -66,6 +66,8 @@ let toastTimer;
 let dialValue = 20;
 let deviceDetected = false;
 let hardwareTransportReady = false;
+let pendingIconSlot = null;
+const runtimeVisualStates = new Map();
 
 const keyGrid = document.querySelector("#keyGrid");
 const actionGroups = document.querySelector("#actionGroups");
@@ -77,6 +79,7 @@ const brightnessValue = document.querySelector("#brightnessValue");
 const toast = document.querySelector("#toast");
 const undoButton = document.querySelector("#undoButton");
 const redoButton = document.querySelector("#redoButton");
+const iconUpload = document.querySelector("#iconUpload");
 
 function iconMarkup(name) {
   return icons[name] || icons.plus;
@@ -121,10 +124,29 @@ try {
   // A malformed local draft should never prevent the editor from loading.
 }
 
-function keyScreenMarkup(key) {
+function visualStateKey(profile, index) {
+  return `${profile}:${index}`;
+}
+
+function setRuntimeVisualState(index, secondary) {
+  runtimeVisualStates.set(visualStateKey(currentProfile, index), Boolean(secondary));
+}
+
+function getRuntimeVisualState(index) {
+  return runtimeVisualStates.get(visualStateKey(currentProfile, index)) || false;
+}
+
+function selectedVisual(key, secondary = false) {
+  if (!key) return null;
+  const primary = key.visuals?.primary || (key.image ? { url: key.image, name: "Legacy icon" } : null);
+  return secondary ? (key.visuals?.secondary || primary) : primary;
+}
+
+function keyScreenMarkup(key, secondary = false) {
   if (!key) return '<div class="key-screen empty"><span class="empty-plus">+</span></div>';
-  if (key.image) {
-    return `<div class="key-screen" style="--key-color:${key.color};background-image:url('${key.image}');background-size:cover;background-position:center"><span class="key-label">${escapeHtml(key.title)}</span></div>`;
+  const visual = selectedVisual(key, secondary);
+  if (visual?.url) {
+    return `<div class="key-screen has-custom-icon" style="--key-color:${escapeHtml(key.color)}"><img src="${escapeHtml(visual.url)}" alt="" draggable="false"><span class="key-label">${escapeHtml(key.title)}</span></div>`;
   }
   return `<div class="key-screen" style="--key-color:${key.color}">${iconMarkup(key.icon)}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
 }
@@ -142,7 +164,7 @@ function renderKeys() {
     button.className = `deck-key${index === selectedIndex ? " selected" : ""}`;
     button.dataset.index = index;
     button.setAttribute("aria-label", key ? `Key ${index + 1}: ${key.title}` : `Key ${index + 1}: empty`);
-    button.innerHTML = keyScreenMarkup(key);
+    button.innerHTML = keyScreenMarkup(key, getRuntimeVisualState(index));
     button.addEventListener("click", () => handleKeyClick(index));
     button.addEventListener("dragover", (event) => {
       event.preventDefault();
@@ -200,7 +222,7 @@ function updateInspector() {
   selectedKeyNumber.textContent = String(selectedIndex + 1).padStart(2, "0");
   keyTitle.value = key?.title || "";
   document.querySelector("#titleCount").textContent = `${keyTitle.value.length}/18`;
-  miniKey.innerHTML = keyScreenMarkup(key);
+  miniKey.innerHTML = keyScreenMarkup(key, getRuntimeVisualState(selectedIndex));
 
   const name = key?.name || "Empty key";
   const subtitle = key?.subtitle || "Choose an action";
@@ -237,6 +259,39 @@ function updateInspector() {
   document.querySelectorAll("#colorRow button").forEach((button) => {
     button.classList.toggle("active", button.dataset.color === key?.color);
   });
+  updateIconStateEditor(key);
+}
+
+function updateIconCard(slot, visual, enabled) {
+  const prefix = slot === "primary" ? "primary" : "secondary";
+  const card = document.querySelector(`#${prefix}IconCard`);
+  const art = document.querySelector(`#${prefix}IconArt`);
+  const name = document.querySelector(`#${prefix}IconName`);
+  const target = card.querySelector(".icon-upload-target");
+  card.classList.toggle("has-asset", Boolean(visual));
+  card.classList.toggle("animated", Boolean(visual?.animated));
+  target.disabled = !enabled;
+  art.innerHTML = visual?.url
+    ? `<img src="${escapeHtml(visual.url)}" alt="" draggable="false">`
+    : '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></svg>';
+  name.textContent = visual?.name || (slot === "primary" ? "Add first icon" : "Optional second icon");
+}
+
+function updateIconStateEditor(key) {
+  const behavior = key?.visualBehavior === "toggle" ? "toggle" : "momentary";
+  updateIconCard("primary", key?.visuals?.primary || null, Boolean(key));
+  updateIconCard("secondary", key?.visuals?.secondary || null, Boolean(key));
+  document.querySelector("#secondaryStateLabel").textContent =
+    behavior === "toggle" ? "ON" : "PRESSED";
+  document.querySelectorAll("[data-visual-behavior]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.visualBehavior === behavior);
+    button.disabled = !key;
+  });
+  document.querySelector("#iconStateNote").textContent = !key?.visuals?.secondary
+    ? "Without a second icon, the first icon stays visible."
+    : behavior === "toggle"
+      ? "Every press switches between Off and On."
+      : "The second icon is visible only while the key is held.";
 }
 
 function snapshot() {
@@ -255,7 +310,7 @@ function handleKeyClick(index) {
   if (duplicateSource !== null && duplicateSource !== index) {
     snapshot();
     layouts[currentProfile][index] = layouts[currentProfile][duplicateSource]
-      ? { ...layouts[currentProfile][duplicateSource] }
+      ? structuredClone(layouts[currentProfile][duplicateSource])
       : null;
     duplicateSource = null;
     showToast("Key duplicated", `Copied the action to key ${String(index + 1).padStart(2, "0")}.`);
@@ -271,8 +326,11 @@ function assignAction(index, actionId) {
   layouts[currentProfile][index] = {
     ...action,
     title: action.name.toUpperCase().slice(0, 18),
-    target: action.description
+    target: action.description,
+    visualBehavior: "momentary",
+    visuals: { primary: null, secondary: null }
   };
+  setRuntimeVisualState(index, false);
   selectedIndex = index;
   renderKeys();
   showToast("Action assigned", `${action.name} is ready on key ${String(index + 1).padStart(2, "0")}.`);
@@ -313,8 +371,13 @@ async function syncDeck() {
     const result = await response.json();
     if (!response.ok || !result.ok) throw new Error(result.error || "Hardware sync failed");
     hardwareTransportReady = true;
+    for (let index = 0; index < layouts[currentProfile].length; index += 1) {
+      setRuntimeVisualState(index, false);
+    }
+    renderKeys();
     document.querySelector("#lastSaved").textContent = "Synced just now";
-    showToast("Synced to N1", `${result.written} key images are live on the device.`);
+    const animationLabel = result.animated ? ` · ${result.animated} animated` : "";
+    showToast("Synced to N1", `${result.written} key images are live${animationLabel}.`);
   } catch (error) {
     document.querySelector("#lastSaved").textContent = "Saved locally · device sync failed";
     showToast(
@@ -390,10 +453,98 @@ document.querySelector("#autoColorButton").addEventListener("click", () => {
   if (key) updateKey({ color: actionCatalog.find((item) => item.id === key.id)?.color || "#37b7ff" });
 });
 
+document.querySelectorAll("[data-icon-slot]").forEach((button) => {
+  button.addEventListener("click", () => {
+    if (!layouts[currentProfile][selectedIndex]) {
+      showToast("Assign an action first", "Icons belong to a configured deck key.");
+      return;
+    }
+    pendingIconSlot = {
+      slot: button.dataset.iconSlot,
+      profile: currentProfile,
+      index: selectedIndex
+    };
+    iconUpload.value = "";
+    iconUpload.click();
+  });
+});
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(reader.result));
+    reader.addEventListener("error", () => reject(new Error("The icon file could not be read")));
+    reader.readAsDataURL(file);
+  });
+}
+
+iconUpload.addEventListener("change", async () => {
+  const file = iconUpload.files?.[0];
+  const target = pendingIconSlot;
+  pendingIconSlot = null;
+  if (!file || !target) return;
+  if (file.size > 5_000_000) {
+    showToast("Icon is too large", "Choose an image smaller than 5 MB.");
+    return;
+  }
+
+  const card = document.querySelector(
+    target.slot === "primary" ? "#primaryIconCard" : "#secondaryIconCard"
+  );
+  card.classList.add("uploading");
+  try {
+    const dataUrl = await readFileAsDataUrl(file);
+    const response = await fetch("/api/assets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: file.name, dataUrl })
+    });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || "Icon upload failed");
+
+    const key = layouts[target.profile]?.[target.index];
+    if (!key) throw new Error("The destination key no longer exists");
+    if (target.profile === currentProfile) snapshot();
+    key.visuals = { ...(key.visuals || {}), [target.slot]: result.asset };
+    if (target.profile === currentProfile) renderKeys();
+    document.querySelector("#lastSaved").textContent = "Unsynced changes";
+    showToast(
+      result.asset.animated ? "Animated icon added" : "Static icon added",
+      `${file.name} is assigned to the ${target.slot === "primary" ? "first" : "second"} state.`
+    );
+  } catch (error) {
+    showToast("Icon upload failed", error.message);
+  } finally {
+    card.classList.remove("uploading");
+    iconUpload.value = "";
+  }
+});
+
+function removeIcon(slot) {
+  const key = layouts[currentProfile][selectedIndex];
+  if (!key?.visuals?.[slot]) return;
+  const visuals = { ...key.visuals, [slot]: null };
+  updateKey({ visuals });
+  setRuntimeVisualState(selectedIndex, false);
+  showToast("Icon removed", slot === "primary" ? "The generated first icon will be used." : "The first icon will remain visible in both states.");
+}
+
+document.querySelector("#removePrimaryIcon").addEventListener("click", () => removeIcon("primary"));
+document.querySelector("#removeSecondaryIcon").addEventListener("click", () => removeIcon("secondary"));
+
+document.querySelectorAll("[data-visual-behavior]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const behavior = button.dataset.visualBehavior;
+    setRuntimeVisualState(selectedIndex, false);
+    updateKey({ visualBehavior: behavior });
+  });
+});
+
 document.querySelector("#clearKeyButton").addEventListener("click", () => {
   if (!layouts[currentProfile][selectedIndex]) return;
   snapshot();
   layouts[currentProfile][selectedIndex] = null;
+  setRuntimeVisualState(selectedIndex, false);
   renderKeys();
   showToast("Key cleared", "The selected slot is now empty.");
 });
@@ -451,6 +602,21 @@ document.querySelector("#testActionButton").addEventListener("click", async () =
     [{ transform: "scale(1)" }, { transform: "scale(.91)", filter: "brightness(1.7)" }, { transform: "scale(1)" }],
     { duration: 350, easing: "ease-out" }
   );
+  if (action.visuals?.secondary) {
+    if (action.visualBehavior === "toggle") {
+      setRuntimeVisualState(selectedIndex, !getRuntimeVisualState(selectedIndex));
+      renderKeys();
+    } else {
+      const testedIndex = selectedIndex;
+      const testedProfile = currentProfile;
+      setRuntimeVisualState(testedIndex, true);
+      renderKeys();
+      window.setTimeout(() => {
+        runtimeVisualStates.set(visualStateKey(testedProfile, testedIndex), false);
+        if (currentProfile === testedProfile) renderKeys();
+      }, 450);
+    }
+  }
   try {
     const response = await fetch("/api/action/test", {
       method: "POST",
@@ -582,12 +748,32 @@ hardwareEvents.addEventListener("message", (event) => {
     detectDevice();
     return;
   }
-  if (message.event === "input" && message.type === "button" && message.state === 1) {
+  if (message.event === "input" && message.type === "button") {
     const keyIndex = Number(message.key) - 1;
-    keyGrid.children[keyIndex]?.animate(
-      [{ filter: "brightness(1)" }, { filter: "brightness(1.8)" }, { filter: "brightness(1)" }],
-      { duration: 280 }
-    );
+    const key = layouts[currentProfile]?.[keyIndex];
+    if (key?.visuals?.secondary) {
+      if (key.visualBehavior === "toggle" && message.state === 1) {
+        setRuntimeVisualState(keyIndex, !getRuntimeVisualState(keyIndex));
+      } else if (key.visualBehavior !== "toggle") {
+        setRuntimeVisualState(keyIndex, message.state === 1);
+      }
+      renderKeys();
+    } else if (message.state === 1) {
+      keyGrid.children[keyIndex]?.animate(
+        [{ filter: "brightness(1)" }, { filter: "brightness(1.8)" }, { filter: "brightness(1)" }],
+        { duration: 280 }
+      );
+    }
+    return;
+  }
+  if (message.event === "key_visual") {
+    if (message.ok === false) {
+      showToast("Icon state update failed", message.error || "The device rejected the icon.");
+      return;
+    }
+    const keyIndex = Number(message.key) - 1;
+    setRuntimeVisualState(keyIndex, message.state === "secondary");
+    renderKeys();
     return;
   }
   if (message.event === "action") {

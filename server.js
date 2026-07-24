@@ -1,4 +1,5 @@
 const http = require("node:http");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
@@ -7,7 +8,8 @@ const root = __dirname;
 const port = Number(process.env.PORT || 4173);
 const usbRoot = "/sys/bus/usb/devices";
 const targetUsbIds = new Set(["5548:1002"]);
-const configPath = path.join(root, ".streamctrl-config.json");
+const configPath = process.env.STREAMCTRL_CONFIG || path.join(root, ".streamctrl-config.json");
+const assetRoot = process.env.STREAMCTRL_ASSET_DIR || path.join(root, ".streamctrl-assets");
 const pythonPath = process.env.STREAMCTRL_PYTHON || path.join(root, ".venv", "bin", "python");
 const driverScript = path.join(root, "driver", "n1_service.py");
 const contentTypes = {
@@ -15,10 +17,22 @@ const contentTypes = {
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml"
+  ".gif": "image/gif",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".webp": "image/webp"
+};
+const assetFormats = {
+  "image/gif": { extension: ".gif", signature: (data) => /^GIF8[79]a/.test(data.subarray(0, 6).toString("ascii")) },
+  "image/jpeg": { extension: ".jpg", signature: (data) => data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff },
+  "image/png": { extension: ".png", signature: (data) => data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) },
+  "image/webp": { extension: ".webp", signature: (data) => data.subarray(0, 4).toString("ascii") === "RIFF" && data.subarray(8, 12).toString("ascii") === "WEBP" }
 };
 
 const eventClients = new Set();
+const keyVisualStates = new Map();
 let activeConfig = readJson(configPath) || null;
 
 function readText(filePath) {
@@ -41,6 +55,70 @@ function writeJson(filePath, data) {
   const temporaryPath = `${filePath}.tmp`;
   fs.writeFileSync(temporaryPath, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
   fs.renameSync(temporaryPath, filePath);
+}
+
+function safeAssetPath(assetId) {
+  if (!/^[a-f0-9]{64}\.(?:gif|jpe?g|png|webp)$/.test(String(assetId || ""))) return null;
+  const assetPath = path.join(assetRoot, assetId);
+  return assetPath.startsWith(`${assetRoot}${path.sep}`) ? assetPath : null;
+}
+
+function detectAnimation(mime, data) {
+  if (mime === "image/gif") return true;
+  if (mime === "image/png") return data.includes(Buffer.from("acTL"));
+  if (mime === "image/webp") return data.includes(Buffer.from("ANIM"));
+  return false;
+}
+
+function storeImageAsset(payload) {
+  const match = /^data:(image\/(?:gif|jpeg|png|webp));base64,([A-Za-z0-9+/=\s]+)$/.exec(
+    String(payload.dataUrl || "")
+  );
+  if (!match) throw new Error("Choose a PNG, JPEG, GIF, or WebP image");
+
+  const mime = match[1];
+  const format = assetFormats[mime];
+  const data = Buffer.from(match[2].replace(/\s/g, ""), "base64");
+  if (!data.length || data.length > 5_000_000) {
+    throw new Error("Icon files must be between 1 byte and 5 MB");
+  }
+  if (!format.signature(data)) throw new Error("The uploaded file is not a valid image");
+
+  const digest = crypto.createHash("sha256").update(data).digest("hex");
+  const id = `${digest}${format.extension}`;
+  const assetPath = safeAssetPath(id);
+  fs.mkdirSync(assetRoot, { recursive: true, mode: 0o700 });
+  if (!fs.existsSync(assetPath)) fs.writeFileSync(assetPath, data, { mode: 0o600 });
+
+  return {
+    id,
+    url: `/user-assets/${id}`,
+    name: path.basename(String(payload.name || `icon${format.extension}`)).slice(0, 120),
+    mime,
+    animated: detectAnimation(mime, data),
+    size: data.length
+  };
+}
+
+function materializeVisual(visual) {
+  if (!visual || typeof visual !== "object") return null;
+  const assetPath = safeAssetPath(visual.id);
+  if (!assetPath || !fs.existsSync(assetPath)) {
+    throw new Error(`Icon asset is missing: ${visual.name || visual.id || "unknown image"}`);
+  }
+  return { ...visual, path: assetPath };
+}
+
+function materializeKey(key) {
+  if (!key || typeof key !== "object") return key;
+  const visuals = key.visuals || {};
+  return {
+    ...key,
+    visuals: {
+      primary: materializeVisual(visuals.primary),
+      secondary: materializeVisual(visuals.secondary)
+    }
+  };
 }
 
 function sendJson(response, statusCode, payload) {
@@ -294,6 +372,24 @@ function executeAction(action, key) {
   });
 }
 
+async function applyKeyVisualState(keyNumber, useSecondary) {
+  const key = activeConfig?.keys?.[keyNumber - 1];
+  if (!key?.visuals?.secondary) return;
+
+  const materialized = materializeKey(key);
+  await driver.request(
+    "key_state",
+    { key: keyNumber, secondary: Boolean(useSecondary), config: materialized },
+    30_000
+  );
+  broadcast({
+    event: "key_visual",
+    key: keyNumber,
+    state: useSecondary ? "secondary" : "primary",
+    behavior: key.visualBehavior || "momentary"
+  });
+}
+
 function handleHardwareInput(event) {
   broadcast(event);
 
@@ -316,9 +412,27 @@ function handleHardwareInput(event) {
     return;
   }
 
-  if (event.type !== "button" || event.state !== 1 || !activeConfig?.keys) return;
-  const action = activeConfig.keys[Number(event.key) - 1];
-  if (action) executeAction(action, event.key);
+  if (event.type !== "button" || !activeConfig?.keys) return;
+  const keyNumber = Number(event.key);
+  const action = activeConfig.keys[keyNumber - 1];
+  if (!action) return;
+
+  const behavior = action.visualBehavior === "toggle" ? "toggle" : "momentary";
+  const hasSecondary = Boolean(action.visuals?.secondary);
+  if (hasSecondary && event.state === 1) {
+    const nextState = behavior === "toggle" ? !keyVisualStates.get(keyNumber) : true;
+    keyVisualStates.set(keyNumber, nextState);
+    applyKeyVisualState(keyNumber, nextState).catch((error) => {
+      broadcast({ event: "key_visual", ok: false, key: keyNumber, error: error.message });
+    });
+  } else if (hasSecondary && event.state === 0 && behavior === "momentary") {
+    keyVisualStates.set(keyNumber, false);
+    applyKeyVisualState(keyNumber, false).catch((error) => {
+      broadcast({ event: "key_visual", ok: false, key: keyNumber, error: error.message });
+    });
+  }
+
+  if (event.state === 1) executeAction(action, keyNumber);
 }
 
 async function handleApi(request, response, pathname) {
@@ -336,7 +450,17 @@ async function handleApi(request, response, pathname) {
     });
     response.write(`data: ${JSON.stringify({ event: "driver", ...driver.publicState() })}\n\n`);
     eventClients.add(response);
-    request.on("close", () => eventClients.delete(response));
+    request.socket.on("close", () => eventClients.delete(response));
+    return true;
+  }
+
+  if (pathname === "/api/assets" && request.method === "POST") {
+    try {
+      const payload = await readJsonBody(request, 7_000_000);
+      sendJson(response, 201, { ok: true, asset: storeImageAsset(payload) });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
     return true;
   }
 
@@ -351,9 +475,19 @@ async function handleApi(request, response, pathname) {
         brightness: Math.max(0, Math.min(100, Number(payload.brightness) || 86)),
         keys: payload.keys
       };
+      keyVisualStates.clear();
       writeJson(configPath, activeConfig);
-      const result = await driver.request("sync", activeConfig, 90_000);
-      sendJson(response, 200, { ok: true, written: result.written, brightness: result.brightness });
+      const driverConfig = {
+        ...activeConfig,
+        keys: activeConfig.keys.map(materializeKey)
+      };
+      const result = await driver.request("sync", driverConfig, 90_000);
+      sendJson(response, 200, {
+        ok: true,
+        written: result.written,
+        animated: result.animated || 0,
+        brightness: result.brightness
+      });
     } catch (error) {
       sendJson(response, 503, { ok: false, error: error.message, driver: driver.publicState() });
     }
@@ -399,6 +533,22 @@ const server = http.createServer(async (request, response) => {
     if (!(await handleApi(request, response, pathname))) {
       sendJson(response, 404, { ok: false, error: "API endpoint not found" });
     }
+    return;
+  }
+
+  if (pathname.startsWith("/user-assets/")) {
+    const assetId = pathname.slice("/user-assets/".length);
+    const assetPath = safeAssetPath(assetId);
+    if (!assetPath || !fs.existsSync(assetPath) || !fs.statSync(assetPath).isFile()) {
+      response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end("Icon not found");
+      return;
+    }
+    response.writeHead(200, {
+      "Content-Type": contentTypes[path.extname(assetPath)] || "application/octet-stream",
+      "Cache-Control": "public, max-age=31536000, immutable"
+    });
+    fs.createReadStream(assetPath).pipe(response);
     return;
   }
 

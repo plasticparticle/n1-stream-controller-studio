@@ -1,5 +1,6 @@
 .venv/
 .streamctrl-config.json
+.streamctrl-assets/
 captures/
 __pycache__/
 *.pyc

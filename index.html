@@ -252,6 +252,56 @@
               </div>
             </div>
 
+            <div class="form-section icon-state-section">
+              <div class="label-row">
+                <label>Icon states</label>
+                <span class="asset-format-hint">PNG · JPG · GIF · WEBP</span>
+              </div>
+              <div class="icon-state-grid">
+                <div class="icon-state-card" id="primaryIconCard">
+                  <button class="icon-upload-target" type="button" data-icon-slot="primary">
+                    <span class="icon-state-number">01</span>
+                    <span class="icon-state-art" id="primaryIconArt">
+                      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></svg>
+                    </span>
+                    <span class="icon-state-copy">
+                      <strong>DEFAULT / OFF</strong>
+                      <small id="primaryIconName">Add first icon</small>
+                    </span>
+                  </button>
+                  <button class="icon-remove" id="removePrimaryIcon" type="button" aria-label="Remove first icon" title="Remove icon">×</button>
+                </div>
+                <div class="state-connector" aria-hidden="true">
+                  <span></span>
+                  <svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"></path></svg>
+                </div>
+                <div class="icon-state-card" id="secondaryIconCard">
+                  <button class="icon-upload-target" type="button" data-icon-slot="secondary">
+                    <span class="icon-state-number">02</span>
+                    <span class="icon-state-art" id="secondaryIconArt">
+                      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></svg>
+                    </span>
+                    <span class="icon-state-copy">
+                      <strong id="secondaryStateLabel">PRESSED</strong>
+                      <small id="secondaryIconName">Optional second icon</small>
+                    </span>
+                  </button>
+                  <button class="icon-remove" id="removeSecondaryIcon" type="button" aria-label="Remove second icon" title="Remove icon">×</button>
+                </div>
+              </div>
+              <div class="visual-behavior" role="group" aria-label="Icon state behavior">
+                <button type="button" data-visual-behavior="momentary" class="active">
+                  <strong>PRESS / RELEASE</strong>
+                  <small>Second icon while held</small>
+                </button>
+                <button type="button" data-visual-behavior="toggle">
+                  <strong>TOGGLE ON / OFF</strong>
+                  <small>Switch on every press</small>
+                </button>
+              </div>
+              <p class="icon-state-note" id="iconStateNote">Without a second icon, the first icon stays visible.</p>
+            </div>
+
             <div class="form-section">
               <div class="label-row">
                 <label>Assigned action</label>
@@ -337,7 +387,7 @@
       </form>
     </div>
 
-    <input id="iconUpload" type="file" accept="image/*" hidden />
+    <input id="iconUpload" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
     <script src="app.js"></script>
   </body>
 </html>

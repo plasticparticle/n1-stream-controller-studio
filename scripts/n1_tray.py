@@ -20,8 +20,9 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 gi.require_version("Notify", "0.7")
 gi.require_version("WebKit2", "4.1")
+gi.require_version("XApp", "1.0")
 
-from gi.repository import Gdk, Gio, GLib, Gtk, Notify, WebKit2
+from gi.repository import Gdk, Gio, GLib, Gtk, Notify, WebKit2, XApp
 
 
 APP_NAME = "N1 Stream Controller Studio"
@@ -85,13 +86,13 @@ class StudioTray:
         )
         return view
 
-    def _build_tray(self) -> Gtk.StatusIcon:
-        tray = Gtk.StatusIcon.new_from_file(str(ICON_PATH))
-        tray.set_title(APP_NAME)
+    def _build_tray(self) -> XApp.StatusIcon:
+        tray = XApp.StatusIcon.new_with_name(APP_ID)
+        tray.set_icon_name(str(ICON_PATH))
         tray.set_tooltip_text(f"{APP_NAME}\nClick to open")
         tray.set_visible(True)
-        tray.connect("activate", lambda *_args: self.open_window())
-        tray.connect("popup-menu", self.popup_menu)
+        tray.connect("activate", self.activate_tray)
+        tray.set_secondary_menu(self.menu)
         return tray
 
     def _build_menu(self) -> Gtk.Menu:
@@ -125,8 +126,10 @@ class StudioTray:
         menu.show_all()
         return menu
 
-    def popup_menu(self, _icon: Gtk.StatusIcon, button: int, event_time: int) -> None:
-        self.menu.popup(None, None, Gtk.StatusIcon.position_menu, self.tray, button, event_time)
+    def activate_tray(
+        self, _icon: XApp.StatusIcon, _button: int, _event_time: int
+    ) -> None:
+        self.open_window()
 
     def handle_navigation(
         self,
@@ -328,7 +331,14 @@ def main() -> int:
         print(f"Tray icon is missing: {ICON_PATH}", file=sys.stderr)
         return 1
 
-    StudioTray(show_window=arguments.show and not arguments.hidden)
+    studio = StudioTray(show_window=arguments.show and not arguments.hidden)
+
+    def stop_from_signal() -> bool:
+        studio.quit()
+        return GLib.SOURCE_REMOVE
+
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, stop_from_signal)
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, stop_from_signal)
     Gtk.main()
     return 0
 

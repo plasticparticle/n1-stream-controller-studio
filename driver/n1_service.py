@@ -13,7 +13,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageColor, ImageDraw, ImageFont
+from PIL import Image, ImageColor, ImageDraw, ImageFont, ImageOps, ImageSequence
 from StreamDock.Devices.StreamDock import StreamDock
 from StreamDock.Devices.StreamDockN1 import StreamDockN1
 from StreamDock.InputTypes import EventType
@@ -129,6 +129,97 @@ def render_key(key: dict[str, Any]) -> Image.Image:
     return image
 
 
+def custom_icon_frame(frame: Image.Image, key: dict[str, Any]) -> Image.Image:
+    fitted = ImageOps.fit(
+        frame.convert("RGBA"),
+        KEY_SIZE,
+        method=Image.Resampling.LANCZOS,
+        centering=(0.5, 0.5),
+    )
+    background = Image.new("RGBA", KEY_SIZE, (3, 5, 6, 255))
+    image = Image.alpha_composite(background, fitted).convert("RGB")
+    title = str(key.get("title") or "").strip()
+    if not title:
+        return image
+
+    draw = ImageDraw.Draw(image, "RGBA")
+    draw.rectangle((0, 66, 96, 96), fill=(2, 4, 5, 184))
+    label, font = fit_text(draw, title, 82)
+    box = draw.textbbox((0, 0), label, font=font)
+    draw.text(
+        ((96 - (box[2] - box[0])) / 2, 74),
+        label,
+        font=font,
+        fill=(248, 250, 247, 255),
+    )
+    return image
+
+
+def visual_for_key(key: dict[str, Any], secondary: bool = False) -> dict[str, Any] | None:
+    visuals = key.get("visuals") if isinstance(key.get("visuals"), dict) else {}
+    primary = visuals.get("primary") if isinstance(visuals.get("primary"), dict) else None
+    alternate = (
+        visuals.get("secondary") if isinstance(visuals.get("secondary"), dict) else None
+    )
+    return (alternate or primary) if secondary else primary
+
+
+def load_visual_frames(
+    visual: dict[str, Any], key: dict[str, Any], maximum_frames: int = 120
+) -> tuple[list[bytes], list[int]]:
+    image_path = Path(str(visual.get("path") or ""))
+    if not image_path.is_file():
+        raise RuntimeError(f"Icon file does not exist: {visual.get('name') or image_path.name}")
+
+    encoded_frames: list[bytes] = []
+    delays: list[int] = []
+    with Image.open(image_path) as source:
+        for frame_number, frame in enumerate(ImageSequence.Iterator(source)):
+            if frame_number >= maximum_frames:
+                break
+            native_frame = custom_icon_frame(frame, key)
+            stream = io.BytesIO()
+            native_frame.save(stream, "JPEG", quality=95, subsampling=0)
+            encoded_frames.append(stream.getvalue())
+            delays.append(max(60, min(2_000, int(frame.info.get("duration") or 100))))
+
+    if not encoded_frames:
+        raise RuntimeError(f"Icon has no readable frames: {visual.get('name') or image_path.name}")
+    return encoded_frames, delays
+
+
+def apply_key_visual(
+    device: StreamDockN1,
+    index: int,
+    key: dict[str, Any],
+    temp_path: Path,
+    secondary: bool = False,
+) -> bool:
+    visual = visual_for_key(key, secondary)
+    device.clear_key_gif(index)
+
+    if visual:
+        frames, delays = load_visual_frames(visual, key)
+        first_frame_path = temp_path / f"key-{index:02d}-state.jpg"
+        first_frame_path.write_bytes(frames[0])
+        result = device.set_key_image(index, str(first_frame_path))
+        if result not in (None, 0):
+            raise RuntimeError(f"Image transfer failed for key {index}: {result}")
+        if len(frames) > 1:
+            result = device.set_key_gif_stream(frames, delays, index)
+            if result not in (None, 0):
+                raise RuntimeError(f"Animation setup failed for key {index}: {result}")
+            return True
+        return False
+
+    icon_path = temp_path / f"key-{index:02d}-generated.jpg"
+    render_key(key).save(icon_path, "JPEG", quality=95, subsampling=0)
+    result = device.set_key_image(index, str(icon_path))
+    if result not in (None, 0):
+        raise RuntimeError(f"Image transfer failed for key {index}: {result}")
+    return False
+
+
 def render_status_icon(kind: int) -> Image.Image:
     colors = ("#f2592f", "#2879ed", "#e5a900")
     labels = ("N1", "01", "☀")
@@ -218,16 +309,16 @@ def sync_layout(payload: dict[str, Any]) -> dict[str, Any]:
     with _device_lock, tempfile.TemporaryDirectory(prefix="n1-controller-studio-") as temp_dir:
         temp_path = Path(temp_dir)
         written = 0
+        animated = 0
+        device.stop_gif_loop()
         for index in range(1, 16):
             key = keys[index - 1] if index - 1 < len(keys) else None
             if key:
-                icon_path = temp_path / f"key-{index:02d}.jpg"
-                render_key(key).save(icon_path, "JPEG", quality=95, subsampling=0)
-                result = device.set_key_image(index, str(icon_path))
-                if result not in (None, 0):
-                    raise RuntimeError(f"Image transfer failed for key {index}: {result}")
+                if apply_key_visual(device, index, key, temp_path):
+                    animated += 1
                 written += 1
             else:
+                device.clear_key_gif(index)
                 device.clearIcon(index)
 
         for status_index in range(3):
@@ -241,7 +332,25 @@ def sync_layout(payload: dict[str, Any]) -> dict[str, Any]:
 
         device.set_brightness(brightness)
         device.refresh()
-    return {"written": written, "brightness": brightness}
+        device.start_gif_loop()
+    return {"written": written, "animated": animated, "brightness": brightness}
+
+
+def set_key_state(payload: dict[str, Any]) -> dict[str, Any]:
+    index = int(payload.get("key") or 0)
+    if index not in range(1, 16):
+        raise ValueError("Key state index must be between 1 and 15")
+    key = payload.get("config")
+    if not isinstance(key, dict):
+        raise ValueError("Key state requires a key configuration")
+    secondary = bool(payload.get("secondary"))
+
+    with _device_lock, tempfile.TemporaryDirectory(prefix="n1-key-state-") as temp_dir:
+        device = connect()
+        animated = apply_key_visual(device, index, key, Path(temp_dir), secondary)
+        device.refresh()
+        device.start_gif_loop()
+    return {"key": index, "secondary": secondary, "animated": animated}
 
 
 def set_brightness(payload: dict[str, Any]) -> dict[str, Any]:
@@ -268,6 +377,8 @@ def handle_command(message: dict[str, Any]) -> None:
             response(request_id, True, **sync_layout(message.get("payload") or {}))
         elif command == "brightness":
             response(request_id, True, **set_brightness(message.get("payload") or {}))
+        elif command == "key_state":
+            response(request_id, True, **set_key_state(message.get("payload") or {}))
         elif command == "shutdown":
             response(request_id, True)
             shutdown()
