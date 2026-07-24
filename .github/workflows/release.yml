@@ -58,6 +58,8 @@ jobs:
 
       - name: Set up pinned Rust toolchain
         run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
           rustup show active-toolchain
           rustc --version
           cargo --version
