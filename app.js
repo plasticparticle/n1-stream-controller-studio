@@ -318,6 +318,16 @@ function renderPageTabs() {
   }).join("");
   document.querySelector("#layoutNumber").textContent =
     `LAYOUT ${String(currentPage + 1).padStart(2, "0")}`;
+  const deleteButton = document.querySelector('[data-page-action="delete"]');
+  deleteButton.disabled = pages.length <= 1;
+  deleteButton.setAttribute(
+    "aria-label",
+    pages.length <= 1
+      ? "The only page cannot be deleted"
+      : `Delete page ${currentPage + 1}`
+  );
+  deleteButton.title =
+    pages.length <= 1 ? "A profile needs at least one page" : `Delete page ${currentPage + 1}`;
   tabs.querySelector(".active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
@@ -341,6 +351,36 @@ function switchPage(pageIndex, announce = true) {
       "The page layout is now open. Sync to show it on the physical N1."
     );
   }
+}
+
+function deleteCurrentPage() {
+  const pages = pageLayouts[currentProfile];
+  if (pages.length <= 1) {
+    showToast("Page required", "A profile needs at least one page.");
+    return;
+  }
+
+  const pageIndex = activePageIndex();
+  const pageNumber = pageIndex + 1;
+  const assignedActions = pages[pageIndex].filter(Boolean).length;
+  const detail = assignedActions
+    ? ` It contains ${assignedActions} assigned ${assignedActions === 1 ? "action" : "actions"}.`
+    : "";
+  if (!window.confirm(`Delete Page ${pageNumber}?${detail} This cannot be undone.`)) return;
+
+  pages.splice(pageIndex, 1);
+  for (const stateKey of runtimeVisualStates.keys()) {
+    if (stateKey.startsWith(`${currentProfile}:`)) runtimeVisualStates.delete(stateKey);
+  }
+
+  const nextPage = Math.min(pageIndex, pages.length - 1);
+  switchPage(nextPage, false);
+  document.querySelector("#lastSaved").textContent = "Page deleted · sync to apply";
+  document.querySelector(`.page-tab[data-page-index="${nextPage}"]`)?.focus();
+  showToast(
+    `Page ${pageNumber} deleted`,
+    `The remaining ${pages.length === 1 ? "page has" : `${pages.length} pages have`} been renumbered.`
+  );
 }
 
 function renderKeys() {
@@ -935,6 +975,10 @@ document.querySelector(".page-control").addEventListener("click", (event) => {
       `Page ${pageLayouts[currentProfile].length} created`,
       "Assign actions, then sync this page to show it on the physical N1."
     );
+    return;
+  }
+  if (button.dataset.pageAction === "delete") {
+    deleteCurrentPage();
     return;
   }
   const pageIndex = Number(button.dataset.pageIndex);

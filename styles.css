@@ -1185,12 +1185,14 @@ kbd {
 }
 
 .page-tab:focus-visible,
-.page-add:focus-visible {
+.page-add:focus-visible,
+.page-delete:focus-visible {
   outline: 2px solid var(--cyan);
   outline-offset: 2px;
 }
 
-.page-add {
+.page-add,
+.page-delete {
   height: 32px;
   padding: 0 10px 0 8px;
   border: 1px solid #303a3e;
@@ -1214,7 +1216,22 @@ kbd {
   background: #1a2119;
 }
 
-.page-add svg {
+.page-delete:hover {
+  color: var(--danger);
+  border-color: rgba(239, 71, 111, .46);
+  background: rgba(239, 71, 111, .08);
+}
+
+.page-delete:disabled {
+  cursor: not-allowed;
+  color: #41494c;
+  border-color: #242b2e;
+  background: #101416;
+  opacity: .62;
+}
+
+.page-add svg,
+.page-delete svg {
   width: 13px;
   height: 13px;
 }

@@ -959,7 +959,22 @@ fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
-        let _ = window.set_focus();
+        let _ = window.set_always_on_top(true);
+
+        // On Linux, show and unminimize are queued by the window runtime. A focus
+        // request sent immediately afterwards can be ignored while the native
+        // window is still marked hidden, so focus it on the next settled frame.
+        let app = app.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            let focus_app = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                if let Some(window) = focus_app.get_webview_window("main") {
+                    let _ = window.set_focus();
+                    let _ = window.set_always_on_top(false);
+                }
+            });
+        });
     }
 }
 
