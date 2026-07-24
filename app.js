@@ -1,4 +1,5 @@
 const nativeRuntime = window.__TAURI__;
+const buildInfo = window.__N1_BUILD_INFO__ || {};
 
 const backend = {
   invoke(command, args = {}) {
@@ -118,6 +119,17 @@ const toast = document.querySelector("#toast");
 const undoButton = document.querySelector("#undoButton");
 const redoButton = document.querySelector("#redoButton");
 const iconUpload = document.querySelector("#iconUpload");
+
+function renderBuildInfo() {
+  const versionElement = document.querySelector("#appVersion");
+  const dateElement = document.querySelector("#buildDate");
+  const version = String(buildInfo.version || "").trim();
+  const date = String(buildInfo.date || "").trim();
+
+  versionElement.textContent = version ? `v${version}` : "DEV";
+  dateElement.textContent = date || "LOCAL";
+  if (date) dateElement.dateTime = date;
+}
 
 function iconMarkup(name) {
   return icons[name] || icons.plus;
@@ -875,6 +887,7 @@ const style = document.createElement("style");
 style.textContent = "@keyframes spin { to { transform: rotate(360deg); } }";
 document.head.appendChild(style);
 
+renderBuildInfo();
 renderActions();
 renderKeys();
 initializeNativeState();

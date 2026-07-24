@@ -52,7 +52,6 @@
               <circle cx="12" cy="12" r="4"></circle>
             </svg>
           </button>
-          <button class="avatar" aria-label="User settings" title="User settings">LK</button>
         </div>
       </nav>
 
@@ -352,6 +351,13 @@
           <span>2 HID interfaces</span>
           <span class="status-spacer"></span>
           <span id="lastSaved">Local changes saved</span>
+          <span class="build-stamp" aria-label="Application build information">
+            <span class="build-label">VERSION</span>
+            <strong id="appVersion">DEV</strong>
+            <b class="build-separator" aria-hidden="true"></b>
+            <span class="build-label">BUILT</span>
+            <time id="buildDate">LOCAL</time>
+          </span>
           <span class="key-hint"><kbd>Ctrl</kbd><kbd>S</kbd> Sync</span>
         </footer>
       </div>
@@ -388,6 +394,7 @@
     </div>
 
     <input id="iconUpload" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
+    <script src="build-info.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

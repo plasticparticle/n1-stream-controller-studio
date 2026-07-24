@@ -146,17 +146,6 @@ svg {
   justify-items: center;
 }
 
-.avatar {
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  border: 1px solid #3a4449;
-  border-radius: 50%;
-  background: #182025;
-  color: #b8c1c4;
-  font: 600 10px "DM Mono", monospace;
-}
-
 .app-content {
   min-width: 0;
   flex: 1;
@@ -1729,6 +1718,35 @@ kbd {
 
 .status-spacer {
   flex: 1;
+}
+
+.build-stamp {
+  height: 20px;
+  padding: 0 7px;
+  gap: 6px !important;
+  border: 1px solid #20272b;
+  border-radius: 4px;
+  background: rgba(255,255,255,.018);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .04em;
+}
+
+.build-stamp .build-label {
+  color: #3f4a4f;
+  font-size: .82em;
+  letter-spacing: .1em;
+}
+
+.build-stamp strong,
+.build-stamp time {
+  color: #7f898d;
+  font-weight: 500;
+}
+
+.build-separator {
+  width: 1px;
+  height: 10px;
+  background: #283035;
 }
 
 .key-hint {
