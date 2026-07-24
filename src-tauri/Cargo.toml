@@ -1,0 +1,23 @@
+[package]
+name = "n1-stream-controller-studio"
+version = "0.1.0"
+description = "Native Linux configuration studio for the TreasLin VSDinside N1"
+authors = ["Lars"]
+edition = "2024"
+license = "MIT"
+
+[lib]
+name = "n1_stream_controller_studio"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+base64 = "0.22"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
+tauri-plugin-shell = "2"

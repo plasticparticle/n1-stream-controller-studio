@@ -14,63 +14,62 @@ stream controller.
 
 ## First-time setup
 
-Install the pinned vendor SDK and the narrowly scoped udev permission rule:
+Install the native Linux build dependencies:
 
 ```bash
+sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
+  libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf \
+  python3-venv git
+```
+
+Install [Rust](https://rustup.rs), then install the build-time JavaScript tooling and
+the pinned vendor SDK:
+
+```bash
+npm install
 npm run setup:driver
 ```
 
-The setup command creates `.venv`, installs pip/setuptools/wheel, and builds the pinned
-vendor SDK. It asks for your sudo password only when the udev rule is missing or
-outdated. Unplug and reconnect the N1 after a new rule is installed.
+The driver setup creates `.venv`, installs the SDK, and installs a narrowly scoped udev
+rule. It asks for your sudo password only when that rule is missing or outdated. Unplug
+and reconnect the N1 afterward.
 
-If `.venv` is already present and only USB permission is missing, run:
-
-```bash
-npm run setup:udev
-```
-
-Start the application on any free port:
+Start the native application:
 
 ```bash
-PORT=4197 npm run dev
+npm run dev
 ```
 
-Open `http://127.0.0.1:4197` in Chromium.
+The first native build packages the Python hardware bridge into a self-contained
+sidecar. Node.js, Python, and `.venv` are build-time requirements only; the packaged
+application does not require them at runtime.
 
-## Linux Mint tray app
+## Native desktop and tray
 
-Install the GTK, XApp, notification, and WebKit bindings used by the native tray shell:
+Studio is a Tauri 2 desktop application. Its existing HTML, CSS, and JavaScript
+interface communicates with a Rust core through in-process Tauri commands and events.
+It does not start an HTTP server or listen on a localhost port.
+
+```text
+HTML/CSS/JavaScript interface
+          ↕ Tauri IPC
+Rust desktop core and tray
+          ↕ stdin/stdout
+Bundled N1 hardware sidecar
+          ↕ USB/HID
+      VSDinside N1
+```
+
+Closing the window hides it while the controller remains active. Left-click the N1
+tray icon to reopen Studio; right-click it for **Open Studio** and **Quit**.
+
+Build a Debian package with:
 
 ```bash
-sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-xapp-1.0 \
-  gir1.2-notify-0.7 gir1.2-webkit2-4.1
+npm run build
 ```
 
-Install the N1 icon in the Mint application menu and start it automatically in the
-notification area:
-
-```bash
-npm run setup:tray
-npm run tray
-```
-
-Click the N1 tray icon to open a chromeless Studio window. Closing the window keeps the
-controller service in the tray. Right-click the icon for Open, Reload, Restart, startup,
-and Quit controls. On Linux Mint, the tray uses the native XApp status-icon API. The
-tray uses port `4180` by default; override it with `N1_STUDIO_PORT` when needed.
-
-### Updating an existing tray installation
-
-After pulling a newer version, quit the running Studio from its tray menu and refresh
-the installed launcher, icon, and autostart entry:
-
-```bash
-git pull
-npm run setup:tray
-npm run check
-npm run tray
-```
+Build artifacts are written below `src-tauri/target/release/bundle/`.
 
 ## Custom key icons
 
@@ -95,24 +94,24 @@ deck** after editing to transfer the current layout and start any animations.
 - Supports static and animated custom icons with momentary or toggle states
 - Listens for buttons and rotary-dial events through the vendor HID interface
 - Runs explicit shell actions and built-in Linux media/session actions on key presses
-- Streams hardware and action status back into the browser UI
+- Streams hardware and action status directly into the native UI
 
 The **Sync to deck** button performs a real hardware transfer. Failed USB access is
 reported as an error and never presented as a successful sync.
 
 The hardware service monitors the N1 connection continuously. If the USB cable is
 removed, Studio releases the stale HID handle and automatically opens the controller
-again after it is reconnected. Restarting the tray application is not required.
+again after it is reconnected. Restarting Studio is not required.
 
 ## Commands
 
 ```bash
-npm run check          # JavaScript, Python, and shell syntax checks
+npm run dev            # Start the native Tauri application
+npm run build          # Build the Debian package
+npm run check          # JavaScript, Python, shell, and Rust formatting checks
 npm run driver:probe   # Open the N1 and report driver status
 npm run setup:driver   # Install SDK dependencies and udev permissions
-npm run setup:tray     # Install or refresh the Mint launcher and tray app
 npm run setup:udev     # Install only the USB permission rule
-npm run tray           # Start the native Mint tray and Studio window
 ```
 
 See [docs/HARDWARE.md](docs/HARDWARE.md) for device details, safety boundaries, and the

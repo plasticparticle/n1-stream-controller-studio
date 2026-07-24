@@ -26,6 +26,7 @@ html, body {
   min-width: 1120px;
   height: 100%;
   overflow: hidden;
+  color-scheme: dark;
   background: var(--bg);
   color: var(--text);
   font-family: "Manrope", sans-serif;
@@ -276,6 +277,7 @@ svg {
   padding: 0;
   border: 0;
   outline: 0;
+  appearance: none;
   background: transparent;
   color: var(--text);
   font-size: 11px;

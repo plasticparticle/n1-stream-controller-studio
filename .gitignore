@@ -1,6 +1,12 @@
 .venv/
+node_modules/
 .streamctrl-config.json
 .streamctrl-assets/
 captures/
 __pycache__/
 *.pyc
+dist/
+src-tauri/binaries/
+src-tauri/build/
+src-tauri/gen/
+src-tauri/target/

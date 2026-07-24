@@ -1,3 +1,41 @@
+const nativeRuntime = window.__TAURI__;
+
+const backend = {
+  invoke(command, args = {}) {
+    if (!nativeRuntime?.core?.invoke) {
+      return Promise.reject(new Error("N1 Studio must be opened through the native desktop application"));
+    }
+    return nativeRuntime.core.invoke(command, args);
+  },
+  device() {
+    return this.invoke("device_status");
+  },
+  loadConfig() {
+    return this.invoke("load_config");
+  },
+  sync(payload) {
+    return this.invoke("sync_deck", { payload });
+  },
+  storeAsset(payload) {
+    return this.invoke("store_asset", { payload });
+  },
+  setBrightness(brightness) {
+    return this.invoke("set_brightness", { brightness });
+  },
+  testAction(key, action) {
+    return this.invoke("test_action", { key, action });
+  },
+  resolveAsset(assetId) {
+    return this.invoke("resolve_asset", { assetId });
+  },
+  listen(handler) {
+    if (!nativeRuntime?.event?.listen) {
+      return Promise.reject(new Error("Native event bridge unavailable"));
+    }
+    return nativeRuntime.event.listen("hardware-event", (event) => handler(event.payload));
+  }
+};
+
 const icons = {
   camera: '<svg viewBox="0 0 24 24"><path d="M14.5 6 16 8h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3l1.5-2h5Z"></path><circle cx="12" cy="13" r="3.5"></circle></svg>',
   mic: '<svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"></path></svg>',
@@ -108,6 +146,7 @@ Object.keys(layouts).forEach((profile) => {
 
 const layoutStorageKey = "n1-stream-controller-studio-layouts";
 const legacyLayoutStorageKey = "n1-studio-layouts";
+let restoredSavedLayouts = false;
 
 try {
   const savedLayoutJson =
@@ -117,6 +156,7 @@ try {
     Object.keys(layouts).forEach((profile) => {
       if (Array.isArray(savedLayouts[profile]) && savedLayouts[profile].length === 15) {
         layouts[profile] = savedLayouts[profile];
+        restoredSavedLayouts = true;
       }
     });
   }
@@ -142,11 +182,19 @@ function selectedVisual(key, secondary = false) {
   return secondary ? (key.visuals?.secondary || primary) : primary;
 }
 
+function assetPreviewUrl(visual) {
+  if (visual?.path && nativeRuntime?.core?.convertFileSrc) {
+    return nativeRuntime.core.convertFileSrc(visual.path);
+  }
+  return visual?.url || "";
+}
+
 function keyScreenMarkup(key, secondary = false) {
   if (!key) return '<div class="key-screen empty"><span class="empty-plus">+</span></div>';
   const visual = selectedVisual(key, secondary);
-  if (visual?.url) {
-    return `<div class="key-screen has-custom-icon" style="--key-color:${escapeHtml(key.color)}"><img src="${escapeHtml(visual.url)}" alt="" draggable="false"><span class="key-label">${escapeHtml(key.title)}</span></div>`;
+  const previewUrl = assetPreviewUrl(visual);
+  if (previewUrl) {
+    return `<div class="key-screen has-custom-icon" style="--key-color:${escapeHtml(key.color)}"><img src="${escapeHtml(previewUrl)}" alt="" draggable="false"><span class="key-label">${escapeHtml(key.title)}</span></div>`;
   }
   return `<div class="key-screen" style="--key-color:${key.color}">${iconMarkup(key.icon)}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
 }
@@ -271,8 +319,9 @@ function updateIconCard(slot, visual, enabled) {
   card.classList.toggle("has-asset", Boolean(visual));
   card.classList.toggle("animated", Boolean(visual?.animated));
   target.disabled = !enabled;
-  art.innerHTML = visual?.url
-    ? `<img src="${escapeHtml(visual.url)}" alt="" draggable="false">`
+  const previewUrl = assetPreviewUrl(visual);
+  art.innerHTML = previewUrl
+    ? `<img src="${escapeHtml(previewUrl)}" alt="" draggable="false">`
     : '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></svg>';
   name.textContent = visual?.name || (slot === "primary" ? "Add first icon" : "Optional second icon");
 }
@@ -359,17 +408,12 @@ async function syncDeck() {
   button.innerHTML = '<svg viewBox="0 0 24 24" style="animation:spin .8s linear infinite"><path d="M20 12a8 8 0 1 1-2.3-5.7"></path></svg><span>Syncing…</span>';
   localStorage.setItem(layoutStorageKey, JSON.stringify(layouts));
   try {
-    const response = await fetch("/api/sync", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        profile: currentProfile,
-        brightness: Number(brightness.value),
-        keys: layouts[currentProfile]
-      })
+    const result = await backend.sync({
+      profile: currentProfile,
+      brightness: Number(brightness.value),
+      keys: layouts[currentProfile]
     });
-    const result = await response.json();
-    if (!response.ok || !result.ok) throw new Error(result.error || "Hardware sync failed");
+    if (!result.ok) throw new Error(result.error || "Hardware sync failed");
     hardwareTransportReady = true;
     for (let index = 0; index < layouts[currentProfile].length; index += 1) {
       setRuntimeVisualState(index, false);
@@ -393,9 +437,7 @@ async function syncDeck() {
 
 async function detectDevice() {
   try {
-    const response = await fetch("/api/device", { cache: "no-store" });
-    if (!response.ok) throw new Error("Device API unavailable");
-    const device = await response.json();
+    const device = await backend.device();
     deviceDetected = Boolean(device.connected);
     hardwareTransportReady = Boolean(device.transportReady);
     const deviceButton = document.querySelector("#deviceButton");
@@ -498,13 +540,8 @@ iconUpload.addEventListener("change", async () => {
   card.classList.add("uploading");
   try {
     const dataUrl = await readFileAsDataUrl(file);
-    const response = await fetch("/api/assets", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: file.name, dataUrl })
-    });
-    const result = await response.json();
-    if (!response.ok || !result.ok) throw new Error(result.error || "Icon upload failed");
+    const result = await backend.storeAsset({ name: file.name, dataUrl });
+    if (!result.ok) throw new Error(result.error || "Icon upload failed");
 
     const key = layouts[target.profile]?.[target.index];
     if (!key) throw new Error("The destination key no longer exists");
@@ -565,12 +602,8 @@ brightness.addEventListener("input", () => {
 brightness.addEventListener("change", async () => {
   if (!hardwareTransportReady) return;
   try {
-    const response = await fetch("/api/brightness", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ brightness: Number(brightness.value) })
-    });
-    if (!response.ok) throw new Error("Brightness update failed");
+    const result = await backend.setBrightness(Number(brightness.value));
+    if (!result.ok) throw new Error(result.error || "Brightness update failed");
   } catch (error) {
     showToast("Brightness update failed", error.message);
   }
@@ -622,13 +655,8 @@ document.querySelector("#testActionButton").addEventListener("click", async () =
     }
   }
   try {
-    const response = await fetch("/api/action/test", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: selectedIndex + 1, action })
-    });
-    const result = await response.json();
-    if (!response.ok || !result.ok) throw new Error(result.error || "Action test failed");
+    const result = await backend.testAction(selectedIndex + 1, action);
+    if (!result.ok) throw new Error(result.error || "Action test failed");
   } catch (error) {
     showToast("Action could not run", error.message);
   }
@@ -739,14 +767,8 @@ document.querySelector("#deviceButton").addEventListener("click", async () => {
   );
 });
 
-const hardwareEvents = new EventSource("/api/events");
-hardwareEvents.addEventListener("message", (event) => {
-  let message;
-  try {
-    message = JSON.parse(event.data);
-  } catch {
-    return;
-  }
+function handleHardwareEvent(message) {
+  if (!message || typeof message !== "object") return;
   if (message.event === "driver") {
     hardwareTransportReady = message.status === "ready";
     detectDevice();
@@ -786,7 +808,50 @@ hardwareEvents.addEventListener("message", (event) => {
       message.ok ? message.name : `${message.name || "Action"}: ${message.error}`
     );
   }
-});
+}
+
+async function restoreAssetPaths() {
+  const visuals = [];
+  Object.values(layouts).forEach((layout) => {
+    layout.forEach((key) => {
+      ["primary", "secondary"].forEach((slot) => {
+        const visual = key?.visuals?.[slot];
+        if (visual?.id && !visual.path) visuals.push(visual);
+      });
+    });
+  });
+  await Promise.all(visuals.map(async (visual) => {
+    try {
+      visual.path = await backend.resolveAsset(visual.id);
+    } catch {
+      // Missing legacy assets fall back to generated key artwork.
+    }
+  }));
+  renderKeys();
+}
+
+async function initializeNativeState() {
+  if (!restoredSavedLayouts) {
+    try {
+      const config = await backend.loadConfig();
+      const profile = config?.profile;
+      if (profile && layouts[profile] && Array.isArray(config.keys) && config.keys.length === 15) {
+        layouts[profile] = config.keys;
+        currentProfile = profile;
+        document.querySelector("#profileSelect").value = profile;
+        document.querySelector("#layoutTitle").textContent = profileNames[profile];
+        localStorage.setItem(layoutStorageKey, JSON.stringify(layouts));
+      }
+    } catch {
+      // A first run has no native configuration to restore.
+    }
+  }
+  await restoreAssetPaths();
+  await detectDevice();
+  backend.listen(handleHardwareEvent).catch((error) => {
+    console.error("Native hardware event bridge unavailable", error);
+  });
+}
 
 document.addEventListener("keydown", (event) => {
   const modifier = event.ctrlKey || event.metaKey;
@@ -812,4 +877,4 @@ document.head.appendChild(style);
 
 renderActions();
 renderKeys();
-detectDevice();
+initializeNativeState();

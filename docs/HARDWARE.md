@@ -47,7 +47,8 @@ The driver monitors the N1's USB identity while Studio is running. Physical remo
 closes the old HID transport; reconnecting the controller opens a new handle
 automatically. Transfers also perform one bounded reconnect-and-retry cycle, so
 **Sync to deck** can recover when it is pressed while the device is still settling.
-The Node bridge restarts the Python process with backoff if the native transport exits.
+The Rust desktop core restarts the bundled driver sidecar if the native transport
+process exits unexpectedly.
 
 ## Safety boundary
 
