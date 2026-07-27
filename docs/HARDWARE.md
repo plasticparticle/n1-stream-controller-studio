@@ -49,7 +49,7 @@ of buttons it currently inhabits.
 When Studio starts, the sidecar:
 
 1. Finds `5548:1002`, opens the writable vendor HID interface, selects N1 report
-   geometry, enters dock mode, and wakes the screen.
+   geometry, enters dock mode, and runs the SDK’s complete display initialization.
 2. Announces that the transport is ready.
 3. Gives the freshly loaded editor a brief chance to send its newest local draft.
 4. Otherwise restores the last validated native configuration automatically.

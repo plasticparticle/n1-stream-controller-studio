@@ -30,6 +30,62 @@ class FakeDevice:
         return 0
 
 
+class DriverLifecycleTests(unittest.TestCase):
+    def test_driver_lock_allows_only_one_usb_owner(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lock_path = Path(temp_dir) / "driver.lock"
+            descriptor = n1_service.acquire_instance_lock(lock_path, blocking=False)
+            try:
+                with self.assertRaises(BlockingIOError):
+                    n1_service.acquire_instance_lock(lock_path, blocking=False)
+            finally:
+                n1_service.fcntl.flock(descriptor, n1_service.fcntl.LOCK_UN)
+                n1_service.os.close(descriptor)
+
+    def test_finds_live_studio_process_in_driver_ancestry(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proc_root = Path(temp_dir)
+            for pid, name, parent in (
+                (300, "n1-driver", 200),
+                (200, "n1-stream-contr", 100),
+                (100, "systemd", 1),
+            ):
+                process = proc_root / str(pid)
+                process.mkdir()
+                (process / "comm").write_text(f"{name}\n", encoding="utf-8")
+                (process / "status").write_text(
+                    f"Name:\t{name}\nPPid:\t{parent}\n", encoding="utf-8"
+                )
+
+            self.assertEqual(
+                n1_service.find_studio_owner(300, proc_root),
+                200,
+            )
+            self.assertIsNone(n1_service.find_studio_owner(100, proc_root))
+
+
+class DeviceInitializationTests(unittest.TestCase):
+    def test_startup_uses_full_sdk_initialization_after_selecting_dock_mode(self):
+        calls = []
+
+        class Transport:
+            def switchMode(self, mode):
+                calls.append(("mode", mode))
+
+        class Device:
+            transport = Transport()
+
+            def set_device(self):
+                calls.append(("geometry",))
+
+            def init(self):
+                calls.append(("init",))
+
+        n1_service.initialize_n1_device(Device())
+
+        self.assertEqual(calls, [("geometry",), ("mode", 2), ("init",)])
+
+
 class BrightnessTests(unittest.TestCase):
     def test_brightness_is_committed_with_a_refresh(self):
         device = FakeDevice()

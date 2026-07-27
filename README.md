@@ -110,9 +110,11 @@ Tagged sessions light their exact slot:
 - Claude: hot orange
 - Gemini: violet
 
-Manually started agent processes are detected too and fill the first available slots.
-Status means reliably **running** or **idle**; Studio does not pretend it can read an
-agent’s mind and guess whether it is thinking, waiting, or asking for approval.
+Only a numbered session whose Studio-tagged CLI process and terminal window are both
+still live illuminates its slot. Manually started and background CLI processes are
+ignored, so an unrelated Codex process cannot impersonate **Codex 1**. Status means
+reliably **running** or **idle**; Studio does not pretend it can read an agent’s mind
+and guess whether it is thinking, waiting, or asking for approval.
 
 Built-in AI launchers use fixed arguments and do not require shell-action opt-in.
 Studio searches `PATH` plus common user installation directories for each CLI.

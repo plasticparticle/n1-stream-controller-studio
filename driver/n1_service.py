@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import fcntl
 import io
 import json
 import math
 import os
+import select
 import signal
 import sys
 import tempfile
@@ -34,6 +36,7 @@ _device_lock = threading.RLock()
 _device_monitor_stop = threading.Event()
 _running = True
 _device: StreamDockN1 | None = None
+_instance_lock_fd: int | None = None
 
 
 def emit(payload: dict[str, Any]) -> None:
@@ -43,6 +46,93 @@ def emit(payload: dict[str, Any]) -> None:
 
 def response(request_id: str | int | None, ok: bool, **payload: Any) -> None:
     emit({"id": request_id, "ok": ok, **payload})
+
+
+def instance_lock_path() -> Path:
+    runtime_dir = Path(
+        os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
+    )
+    return runtime_dir / f"n1-stream-controller-studio-{os.getuid()}.lock"
+
+
+def acquire_instance_lock(path: Path | None = None, blocking: bool = True) -> int:
+    lock_path = path or instance_lock_path()
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(lock_path, flags, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        operation = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+        fcntl.flock(descriptor, operation)
+        os.ftruncate(descriptor, 0)
+        os.write(descriptor, f"{os.getpid()}\n".encode())
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def release_instance_lock() -> None:
+    global _instance_lock_fd
+    descriptor = _instance_lock_fd
+    _instance_lock_fd = None
+    if descriptor is None:
+        return
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
+def process_parent_pid(pid: int, proc_root: Path = Path("/proc")) -> int | None:
+    try:
+        status = (proc_root / str(pid) / "status").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in status.splitlines():
+        if line.startswith("PPid:"):
+            try:
+                return int(line.split(":", 1)[1].strip())
+            except ValueError:
+                return None
+    return None
+
+
+def process_name(pid: int, proc_root: Path = Path("/proc")) -> str:
+    try:
+        return (proc_root / str(pid) / "comm").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def find_studio_owner(
+    start_pid: int | None = None, proc_root: Path = Path("/proc")
+) -> int | None:
+    current = start_pid if start_pid is not None else os.getppid()
+    for _ in range(16):
+        if current <= 1:
+            return None
+        if process_name(current, proc_root).startswith("n1-stream-contr"):
+            return current
+        parent = process_parent_pid(current, proc_root)
+        if parent is None or parent == current:
+            return None
+        current = parent
+    return None
+
+
+def monitor_studio_owner(owner_pid: int) -> None:
+    while _running and not _device_monitor_stop.wait(0.5):
+        if not process_name(owner_pid).startswith("n1-stream-contr"):
+            emit(
+                {
+                    "event": "log",
+                    "level": "warning",
+                    "message": "Studio owner exited; stopping orphaned N1 driver",
+                }
+            )
+            shutdown()
+            return
 
 
 def find_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -570,6 +660,16 @@ def device_is_present() -> bool:
     return bool(enumerate_n1_devices())
 
 
+def initialize_n1_device(device: StreamDockN1) -> None:
+    # This legacy USB identity must receive N1 report geometry before Dock mode.
+    # The full SDK initialization that follows is also required: wakeScreen alone
+    # accepts image transfers but leaves the LCD framebuffer inactive until a
+    # later refresh, which makes a first startup sync appear successful and black.
+    device.set_device()
+    device.transport.switchMode(2)
+    device.init()
+
+
 def connect() -> StreamDockN1:
     global _device
     with _device_lock:
@@ -594,11 +694,7 @@ def connect() -> StreamDockN1:
                     f"Unable to open {info.get('path', 'N1 HID interface')}; install the udev rule"
                 )
 
-            # The native transport requires an open handle before set_report_size().
-            # Select the N1 geometry, then enter Dock mode in that order.
-            device.set_device()
-            device.transport.switchMode(2)
-            device.wakeScreen()
+            initialize_n1_device(device)
             device.set_key_callback(on_input)
         except Exception:
             try:
@@ -906,36 +1002,91 @@ def shutdown(*_: Any) -> None:
     close_device()
 
 
+def handle_termination(*_: Any) -> None:
+    shutdown()
+    raise SystemExit(0)
+
+
 def main() -> int:
-    signal.signal(signal.SIGTERM, shutdown)
-    signal.signal(signal.SIGINT, shutdown)
+    global _instance_lock_fd, _running
+    _running = True
+    _device_monitor_stop.clear()
+    signal.signal(signal.SIGTERM, handle_termination)
+    signal.signal(signal.SIGINT, handle_termination)
     emit({"event": "status", "status": "starting"})
+
+    owner_pid = None
+    if getattr(sys, "frozen", False) and "--probe" not in sys.argv:
+        owner_pid = find_studio_owner()
+        if owner_pid is None:
+            emit(
+                {
+                    "event": "status",
+                    "status": "error",
+                    "error": "Bundled N1 driver has no live Studio owner",
+                }
+            )
+            return 1
+
+    is_probe = "--probe" in sys.argv
+    try:
+        _instance_lock_fd = acquire_instance_lock(blocking=not is_probe)
+    except BlockingIOError:
+        emit(
+            {
+                "event": "status",
+                "status": "ready",
+                "message": "N1 transport is owned by the running Controller Studio",
+            }
+        )
+        return 0
+    except Exception as error:
+        emit({"event": "status", "status": "error", "error": str(error)})
+        return 1
 
     try:
         connect()
     except Exception as error:
         emit({"event": "status", "status": status_for_error(error), "error": str(error)})
-        if "--probe" in sys.argv:
+        if is_probe:
+            release_instance_lock()
             return 1
 
-    if "--probe" in sys.argv:
+    if is_probe:
         close_device()
+        release_instance_lock()
         return 0
 
+    owner_monitor = None
+    if owner_pid is not None:
+        owner_monitor = threading.Thread(
+            target=monitor_studio_owner,
+            args=(owner_pid,),
+            name="n1-studio-owner-monitor",
+            daemon=True,
+        )
+        owner_monitor.start()
     monitor = threading.Thread(target=monitor_device, name="n1-device-monitor", daemon=True)
     monitor.start()
 
-    while _running:
-        line = sys.stdin.readline()
-        if not line:
-            break
-        try:
-            handle_command(json.loads(line))
-        except json.JSONDecodeError as error:
-            emit({"event": "log", "level": "error", "message": f"Invalid JSON: {error}"})
-
-    shutdown()
-    monitor.join(timeout=2.0)
+    try:
+        while _running:
+            readable, _, _ = select.select([sys.stdin], [], [], 0.5)
+            if not readable:
+                continue
+            line = sys.stdin.readline()
+            if not line:
+                break
+            try:
+                handle_command(json.loads(line))
+            except json.JSONDecodeError as error:
+                emit({"event": "log", "level": "error", "message": f"Invalid JSON: {error}"})
+    finally:
+        shutdown()
+        monitor.join(timeout=2.0)
+        if owner_monitor is not None:
+            owner_monitor.join(timeout=1.0)
+        release_instance_lock()
     return 0
 
 

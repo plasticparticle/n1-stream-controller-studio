@@ -267,6 +267,7 @@ const profileNames = {
 const defaultProfilesVersion = 1;
 const maxProfiles = 24;
 const maxProfileNameLength = 40;
+const maxAutoSyncRetries = 6;
 let currentProfile = "streaming";
 let profileOrder = [];
 let selectedIndex = 0;
@@ -286,6 +287,7 @@ let autoSyncTimer = null;
 let autoSyncQueued = false;
 let autoSyncRevision = 0;
 let autoSyncAnnounce = false;
+let autoSyncRetryCount = 0;
 let pendingIconSlot = null;
 let pendingSoundTarget = null;
 let profileDialogMode = "create";
@@ -700,6 +702,7 @@ function requestDeviceSync({ immediate = false, announce = false } = {}) {
   autoSyncRevision += 1;
   autoSyncQueued = true;
   autoSyncAnnounce ||= announce;
+  autoSyncRetryCount = 0;
   window.clearTimeout(autoSyncTimer);
   autoSyncTimer = null;
 
@@ -722,11 +725,23 @@ function requestDeviceSync({ immediate = false, announce = false } = {}) {
 
 function autoSyncOnTransportReady(transportWasReady) {
   if (transportWasReady || !hardwareTransportReady) return;
+  autoSyncRetryCount = 0;
   if (autoSyncQueued) {
     void flushDeviceSync();
     return;
   }
   void requestDeviceSync({ immediate: true });
+}
+
+function scheduleAutoSyncRetry() {
+  if (!autoSyncQueued || autoSyncRetryCount >= maxAutoSyncRetries) return;
+  const delay = Math.min(500 * (2 ** autoSyncRetryCount), 4000);
+  autoSyncRetryCount += 1;
+  window.clearTimeout(autoSyncTimer);
+  autoSyncTimer = window.setTimeout(() => {
+    autoSyncTimer = null;
+    if (autoSyncQueued && hardwareTransportReady) void flushDeviceSync();
+  }, delay);
 }
 
 function visualStateKey(profile, page, index) {
@@ -1539,6 +1554,7 @@ async function flushDeviceSync() {
     const result = await backend.sync(payload);
     if (!result.ok) throw new Error(result.error || "Hardware sync failed");
     syncSucceeded = true;
+    autoSyncRetryCount = 0;
     hardwareTransportReady = true;
     if (currentProfile === syncProfile && activePageIndex() === syncPage) {
       for (let index = 0; index < activeLayout().length; index += 1) {
@@ -1558,13 +1574,17 @@ async function flushDeviceSync() {
       );
     }
   } catch (error) {
+    const firstFailure = autoSyncRetryCount === 0;
     autoSyncQueued = true;
     setAutoSyncStatus("Saved locally · automatic sync failed", "error");
-    showToast(
-      deviceDetected ? "Hardware sync failed" : "N1 is offline",
-      error.message || "The N1 driver could not complete the transfer."
-    );
-    detectDevice();
+    if (firstFailure) {
+      showToast(
+        deviceDetected ? "Hardware sync failed" : "N1 is offline",
+        error.message || "The N1 driver could not complete the transfer."
+      );
+    }
+    scheduleAutoSyncRetry();
+    void detectDevice();
   } finally {
     deckSyncInProgress = false;
     if (syncSucceeded && autoSyncQueued && hardwareTransportReady) {

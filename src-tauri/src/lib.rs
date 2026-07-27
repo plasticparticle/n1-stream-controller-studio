@@ -30,6 +30,7 @@ const MAX_JSON_STRING_BYTES: usize = 4_096;
 const MAX_DRIVER_LINE_BYTES: usize = 256_000;
 const MAX_PENDING_HARDWARE_EVENTS: usize = 16;
 const MAX_ACTIVE_ACTION_PROCESSES: usize = 16;
+const ACTIVE_CONFIG_RESTORE_ATTEMPTS: usize = 8;
 const SHELL_ACTION_OPT_IN: &str = "N1_STUDIO_ALLOW_SHELL_ACTIONS";
 const IMAGE_EXTENSIONS: &[&str] = &[".gif", ".jpg", ".jpeg", ".png", ".webp"];
 const SOUND_EXTENSIONS: &[&str] = &[".flac", ".mp3", ".ogg", ".wav"];
@@ -76,7 +77,7 @@ struct TestActionInput {
     agent_slot: Option<u8>,
 }
 
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct AgentProcessStatus {
     count: u64,
     slots: BTreeSet<u8>,
@@ -95,6 +96,7 @@ struct AppCore {
     active_action_processes: Arc<AtomicUsize>,
     agent_statuses: Mutex<HashMap<String, AgentProcessStatus>>,
     sync_guard: Mutex<()>,
+    completed_deck_syncs: AtomicUsize,
     allow_shell_actions: bool,
     config_path: PathBuf,
     asset_root: PathBuf,
@@ -401,6 +403,7 @@ impl AppCore {
             active_action_processes: Arc::new(AtomicUsize::new(0)),
             agent_statuses: Mutex::new(empty_agent_statuses()),
             sync_guard: Mutex::new(()),
+            completed_deck_syncs: AtomicUsize::new(0),
             allow_shell_actions: std::env::var(SHELL_ACTION_OPT_IN).as_deref() == Ok("1"),
             config_path,
             asset_root,
@@ -536,6 +539,7 @@ impl AppCore {
         lock(&self.key_visual_states).clear();
 
         let result = self.send_config_to_device(active_config)?;
+        self.completed_deck_syncs.fetch_add(1, Ordering::AcqRel);
         Ok(json!({
             "ok": true,
             "written": result.get("written").and_then(Value::as_u64).unwrap_or(0),
@@ -559,25 +563,48 @@ impl AppCore {
 
     fn schedule_active_config_restore(self: &Arc<Self>) {
         let core = self.clone();
+        let completed_at_ready = self.completed_deck_syncs.load(Ordering::Acquire);
         thread::spawn(move || {
             // Give a freshly loaded editor a short opportunity to send its newer
-            // local draft first. If it has not, restore the last native config so
-            // the deck never remains blank because a webview event was missed.
-            thread::sleep(Duration::from_millis(250));
-            let Ok(_sync) = core.sync_guard.try_lock() else {
-                return;
-            };
-            if core.driver.public_state().status != "ready" {
-                return;
+            // local draft first. If that transfer is busy or fails while USB is
+            // settling, wait for it and retry the latest native config instead of
+            // leaving the freshly awakened deck black.
+            let mut last_error = None;
+            for attempt in 0..ACTIVE_CONFIG_RESTORE_ATTEMPTS {
+                thread::sleep(active_config_restore_delay(attempt));
+                if core.driver.public_state().status != "ready" {
+                    continue;
+                }
+                let _sync = lock(&core.sync_guard);
+                if core.completed_deck_syncs.load(Ordering::Acquire) != completed_at_ready {
+                    return;
+                }
+                if core.driver.public_state().status != "ready" {
+                    continue;
+                }
+                let Some(config) = lock(&core.active_config).clone() else {
+                    return;
+                };
+                match core.send_config_to_device(config) {
+                    Ok(_) => {
+                        core.completed_deck_syncs.fetch_add(1, Ordering::AcqRel);
+                        core.emit(json!({
+                            "event": "driver_log",
+                            "level": "info",
+                            "message": "Active deck restored automatically"
+                        }));
+                        return;
+                    }
+                    Err(error) => last_error = Some(error),
+                }
             }
-            let Some(config) = lock(&core.active_config).clone() else {
-                return;
-            };
-            if let Err(error) = core.send_config_to_device(config) {
+            if let Some(error) = last_error {
                 core.emit(json!({
                     "event": "driver_log",
                     "level": "error",
-                    "message": format!("Automatic deck restore failed: {error}")
+                    "message": format!(
+                        "Automatic deck restore failed after {ACTIVE_CONFIG_RESTORE_ATTEMPTS} attempts: {error}"
+                    )
                 }));
             }
         });
@@ -1629,8 +1656,29 @@ fn focus_agent_terminal(action: &Value) -> bool {
     let Ok(program) = trusted_program_path("wmctrl") else {
         return false;
     };
+    if run_wmctrl(&program, &["-a", &title]) {
+        return true;
+    }
+    let Some(agent) = action.get("agent").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(slot) = action
+        .get("agentSlot")
+        .and_then(Value::as_u64)
+        .and_then(|slot| u8::try_from(slot).ok())
+    else {
+        return false;
+    };
+    let windows = visible_windows();
+    let Some(window_id) = tagged_agent_window_id(Path::new("/proc"), &windows, agent, slot) else {
+        return false;
+    };
+    run_wmctrl(&program, &["-i", "-a", &window_id])
+}
+
+fn run_wmctrl(program: &Path, args: &[&str]) -> bool {
     Command::new(program)
-        .args(["-a", &title])
+        .args(args)
         .env("PATH", "/usr/local/bin:/usr/bin:/bin")
         .env_remove("BASH_ENV")
         .env_remove("CDPATH")
@@ -1730,7 +1778,133 @@ fn process_environment_value(environ: &[u8], name: &str) -> Option<String> {
         .find_map(|entry| entry.strip_prefix(&prefix).map(str::to_string))
 }
 
-fn scan_agent_processes(proc_root: &Path) -> HashMap<String, AgentProcessStatus> {
+fn tagged_agent_slot(agent: &str, environ: &[u8]) -> Option<u8> {
+    if environ.len() > 1_048_576
+        || process_environment_value(environ, "N1_STREAMCTRL_AGENT").as_deref() != Some(agent)
+    {
+        return None;
+    }
+    process_environment_value(environ, "N1_STREAMCTRL_SLOT")
+        .and_then(|slot| slot.parse::<u8>().ok())
+        .filter(|slot| (1..=5).contains(slot))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct VisibleWindow {
+    id: String,
+    pid: u32,
+}
+
+fn visible_windows_from_text(output: &str) -> Vec<VisibleWindow> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let id = fields.next()?;
+            fields.next()?;
+            let pid = fields.next()?.parse::<u32>().ok()?;
+            if id.len() <= 2
+                || !id.starts_with("0x")
+                || !id[2..]
+                    .chars()
+                    .all(|character| character.is_ascii_hexdigit())
+            {
+                return None;
+            }
+            Some(VisibleWindow {
+                id: id.to_string(),
+                pid,
+            })
+        })
+        .collect()
+}
+
+fn visible_windows() -> Vec<VisibleWindow> {
+    let Ok(program) = trusted_program_path("wmctrl") else {
+        return Vec::new();
+    };
+    let Ok(output) = Command::new(program)
+        .arg("-lp")
+        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .env_remove("BASH_ENV")
+        .env_remove("CDPATH")
+        .env_remove("ENV")
+        .env_remove("SHELLOPTS")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    visible_windows_from_text(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn process_parent_id(proc_root: &Path, pid: u32) -> Option<u32> {
+    fs::read_to_string(proc_root.join(pid.to_string()).join("status"))
+        .ok()?
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("PPid:")
+                .and_then(|value| value.trim().parse::<u32>().ok())
+        })
+}
+
+fn visible_window_id_for_process(
+    proc_root: &Path,
+    windows: &[VisibleWindow],
+    pid: u32,
+) -> Option<String> {
+    let mut current = pid;
+    for _ in 0..64 {
+        if let Some(window) = windows.iter().find(|window| window.pid == current) {
+            return Some(window.id.clone());
+        }
+        let parent = process_parent_id(proc_root, current)?;
+        if parent == 0 || parent == current {
+            return None;
+        }
+        current = parent;
+    }
+    None
+}
+
+fn tagged_agent_window_id(
+    proc_root: &Path,
+    windows: &[VisibleWindow],
+    expected_agent: &str,
+    expected_slot: u8,
+) -> Option<String> {
+    for entry in fs::read_dir(proc_root).into_iter().flatten().flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let path = entry.path();
+        let Ok(cmdline) = fs::read(path.join("cmdline")) else {
+            continue;
+        };
+        if classify_agent_process(&cmdline) != Some(expected_agent) {
+            continue;
+        }
+        let Ok(environ) = fs::read(path.join("environ")) else {
+            continue;
+        };
+        if tagged_agent_slot(expected_agent, &environ) != Some(expected_slot) {
+            continue;
+        }
+        if let Some(window_id) = visible_window_id_for_process(proc_root, windows, pid) {
+            return Some(window_id);
+        }
+    }
+    None
+}
+
+fn scan_agent_processes(
+    proc_root: &Path,
+    windows: &[VisibleWindow],
+) -> HashMap<String, AgentProcessStatus> {
     let mut statuses = empty_agent_statuses();
     for entry in fs::read_dir(proc_root).into_iter().flatten().flatten() {
         if !entry
@@ -1741,6 +1915,9 @@ fn scan_agent_processes(proc_root: &Path) -> HashMap<String, AgentProcessStatus>
         {
             continue;
         }
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
         let path = entry.path();
         let Ok(cmdline) = fs::read(path.join("cmdline")) else {
             continue;
@@ -1751,32 +1928,23 @@ fn scan_agent_processes(proc_root: &Path) -> HashMap<String, AgentProcessStatus>
         let Some(agent) = classify_agent_process(&cmdline) else {
             continue;
         };
-        let status = statuses
-            .get_mut(agent)
-            .expect("known agents are initialized");
-        status.count += 1;
         let Ok(environ) = fs::read(path.join("environ")) else {
             continue;
         };
-        if environ.len() > 1_048_576
-            || process_environment_value(&environ, "N1_STREAMCTRL_AGENT").as_deref() != Some(agent)
-        {
+        let Some(slot) = tagged_agent_slot(agent, &environ) else {
+            continue;
+        };
+        if visible_window_id_for_process(proc_root, windows, pid).is_none() {
             continue;
         }
-        if let Some(slot) = process_environment_value(&environ, "N1_STREAMCTRL_SLOT")
-            .and_then(|slot| slot.parse::<u8>().ok())
-            .filter(|slot| (1..=5).contains(slot))
-        {
-            status.slots.insert(slot);
-        }
+        statuses
+            .get_mut(agent)
+            .expect("known agents are initialized")
+            .slots
+            .insert(slot);
     }
     for status in statuses.values_mut() {
-        for slot in 1..=5 {
-            if status.slots.len() >= status.count.min(5) as usize {
-                break;
-            }
-            status.slots.insert(slot);
-        }
+        status.count = status.slots.len() as u64;
     }
     statuses
 }
@@ -1784,7 +1952,8 @@ fn scan_agent_processes(proc_root: &Path) -> HashMap<String, AgentProcessStatus>
 fn start_agent_monitor(core: Arc<AppCore>) {
     thread::spawn(move || {
         loop {
-            let statuses = scan_agent_processes(Path::new("/proc"));
+            let windows = visible_windows();
+            let statuses = scan_agent_processes(Path::new("/proc"), &windows);
             let changed = {
                 let mut current = lock(&core.agent_statuses);
                 if *current == statuses {
@@ -1915,6 +2084,10 @@ fn clamped_number(value: Option<&Value>, default: u64) -> u64 {
         .and_then(Value::as_u64)
         .unwrap_or(default)
         .clamp(0, 100)
+}
+
+fn active_config_restore_delay(attempt: usize) -> Duration {
+    Duration::from_millis(250 + (attempt.min(5) as u64 * 250))
 }
 
 fn validated_test_action(input: TestActionInput) -> Result<Value, String> {
@@ -2637,6 +2810,16 @@ mod tests {
     }
 
     #[test]
+    fn bounds_startup_restore_retry_delays() {
+        assert_eq!(active_config_restore_delay(0), Duration::from_millis(250));
+        assert_eq!(active_config_restore_delay(3), Duration::from_millis(1_000));
+        assert_eq!(
+            active_config_restore_delay(99),
+            Duration::from_millis(1_500)
+        );
+    }
+
+    #[test]
     fn builds_literal_screenshot_commands_for_each_capture_mode() {
         let output = Path::new("/tmp/Screenshot;still-a-filename.png");
         for (action_id, expected_mode) in [
@@ -2840,6 +3023,81 @@ mod tests {
             classify_agent_process(b"/bin/sh\0-c\0echo codex claude gemini\0"),
             None
         );
+        assert_eq!(tagged_agent_slot("codex", b"PATH=/usr/bin\0"), None);
+        assert_eq!(
+            tagged_agent_slot(
+                "codex",
+                b"N1_STREAMCTRL_AGENT=codex\0N1_STREAMCTRL_SLOT=3\0"
+            ),
+            Some(3)
+        );
+        assert_eq!(
+            tagged_agent_slot(
+                "codex",
+                b"N1_STREAMCTRL_AGENT=claude\0N1_STREAMCTRL_SLOT=3\0"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn recognizes_visible_window_processes_without_trusting_titles() {
+        let visible = visible_windows_from_text(
+            "0x01  0 4321 host N1 Studio - CLAUDE 1\n\
+             0x02  0 8765 host ⠇ a title rewritten by the CLI\n\
+             malformed window line\n",
+        );
+        assert_eq!(
+            visible,
+            vec![
+                VisibleWindow {
+                    id: "0x01".into(),
+                    pid: 4321
+                },
+                VisibleWindow {
+                    id: "0x02".into(),
+                    pid: 8765
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn ignores_untagged_agent_processes_even_when_they_have_a_window() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let proc_root = std::env::temp_dir().join(format!(
+            "n1-agent-window-test-{}-{unique}",
+            std::process::id()
+        ));
+        for pid in ["100", "101", "200"] {
+            fs::create_dir_all(proc_root.join(pid)).unwrap();
+        }
+        fs::write(proc_root.join("100/cmdline"), b"codex\0").unwrap();
+        fs::write(proc_root.join("100/environ"), b"PATH=/usr/bin\0").unwrap();
+        fs::write(proc_root.join("100/status"), b"Name:\tcodex\nPPid:\t200\n").unwrap();
+        fs::write(proc_root.join("101/cmdline"), b"claude\0").unwrap();
+        fs::write(
+            proc_root.join("101/environ"),
+            b"N1_STREAMCTRL_AGENT=claude\0N1_STREAMCTRL_SLOT=2\0",
+        )
+        .unwrap();
+        fs::write(proc_root.join("101/status"), b"Name:\tclaude\nPPid:\t200\n").unwrap();
+        fs::write(proc_root.join("200/status"), b"Name:\tterminal\nPPid:\t0\n").unwrap();
+
+        let statuses = scan_agent_processes(
+            &proc_root,
+            &[VisibleWindow {
+                id: "0x42".into(),
+                pid: 200,
+            }],
+        );
+        assert_eq!(statuses["codex"], AgentProcessStatus::default());
+        assert_eq!(statuses["claude"].count, 1);
+        assert_eq!(statuses["claude"].slots, BTreeSet::from([2]));
+        fs::remove_dir_all(proc_root).unwrap();
     }
 
     #[test]
