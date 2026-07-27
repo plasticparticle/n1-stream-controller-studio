@@ -414,6 +414,18 @@ function formatFileSize(bytes) {
   return `${(size / 1_000_000).toFixed(1)} MB`;
 }
 
+function soundLabelFromFilename(filename) {
+  const name = String(filename || "")
+    .trim()
+    .replace(/\.(wav|mp3|ogg|flac)$/i, "");
+  return (name || "SOUND").toUpperCase().slice(0, 18);
+}
+
+function hasDefaultSoundLabel(title) {
+  const label = String(title || "").trim();
+  return !label || label.toLowerCase() === "play sound";
+}
+
 async function analyzeSoundBuffer(buffer) {
   const AudioContextClass = window.AudioContext || window.webkitAudioContext;
   if (!AudioContextClass) return null;
@@ -1175,6 +1187,9 @@ document.querySelector("#soundUpload").addEventListener("change", async (event) 
     if (isCurrentPage) snapshot();
     const analysisApplied = Boolean(analysis);
     key.sound = { ...result.sound, ...(analysis || {}) };
+    if (hasDefaultSoundLabel(key.title)) {
+      key.title = soundLabelFromFilename(result.sound.name);
+    }
     key.target = result.sound.name;
     key.description = result.sound.name;
     if (isCurrentPage) renderKeys();
