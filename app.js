@@ -116,6 +116,128 @@ const icons = {
   plus: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></svg>'
 };
 
+const deviceIconSymbols = {
+  screenshotFull: `
+    <path d="M28 29V20H37M59 20H68V29M28 45V54H37M59 54H68V45" stroke-width="3"></path>
+    <circle cx="48" cy="37" r="7" stroke-width="3"></circle>
+  `,
+  screenshotArea: `
+    <path d="M27 29V20H36M60 20H69V29M27 45V54H36M60 54H69V45" stroke-width="3"></path>
+    <path d="M36 29h3m4 0h3m4 0h3m4 0h3M36 46h3m4 0h3m4 0h3m4 0h3M36 29v3m0 3v3m0 3v3M60 29v3m0 3v3m0 3v3" stroke-width="2"></path>
+  `,
+  screenshotWindow: `
+    <rect x="25" y="19" width="46" height="36" rx="5" stroke-width="3"></rect>
+    <path d="M25 29H71" stroke-width="2"></path>
+    <circle cx="32.5" cy="24.5" r="1.5" fill="currentColor" stroke="none"></circle>
+    <circle cx="38.5" cy="24.5" r="1.5" fill="currentColor" stroke="none"></circle>
+    <rect x="34" y="35" width="28" height="14" stroke-width="2"></rect>
+  `,
+  codexAgent: `
+    <path d="M48 18 62 25 68 39 61 53 46 57 33 49 28 35 36 22 48 18Z" stroke-width="3"></path>
+    <circle cx="48" cy="38" r="10" stroke-width="3"></circle>
+    <path d="M48 18 38 28 33 49 46 57M62 25 58 48 61 53" stroke-width="2"></path>
+  `,
+  claudeAgent: `
+    <path d="M48 37V17M48 37V57M48 37H28M48 37H68M48 37 33 22M48 37 63 52M48 37 63 22M48 37 33 52" stroke-width="3"></path>
+    <circle cx="48" cy="37" r="6" fill="currentColor" stroke="none"></circle>
+  `,
+  geminiAgent: `
+    <path d="m48 16 6 15 16 6-16 6-6 15-6-15-16-6 16-6 6-15Z"></path>
+    <path d="M48 16V58M26 37H70" stroke-width="3"></path>
+  `,
+  resume: `
+    <path d="M34 25a20 20 0 1 1-3 23" stroke-width="4"></path>
+    <path d="m27 24 11-2-4 11Z" fill="currentColor" stroke="none"></path>
+    <path d="M48 27V38L57 43" stroke-width="3"></path>
+  `,
+  plan: `
+    <path d="m31 25 4 4 6-9M46 25H66m-35 12 4 4 6-9M46 37H66m-35 12 4 4 6-9M46 49H66" stroke-width="3"></path>
+  `,
+  build: `
+    <path d="m31 48 24-24 9 9-24 24-11 1 2-10Z"></path>
+    <path d="m51 28 9 9M31 20H43M37 14V26" stroke-width="3"></path>
+  `,
+  bug: `
+    <rect x="36" y="24" width="24" height="31" rx="10" stroke-width="3"></rect>
+    <path d="M40 24v-5l5-3M56 24v-5l-5-3M27 31l9 3m24 0 9-3M27 48l9-3m24 0 9 3" stroke-width="3"></path>
+    <path d="M48 30V53" stroke-width="2"></path>
+  `,
+  test: `
+    <path d="M40 17H56M43 17v12L31 52m22-35v12l12 23" stroke-width="3"></path>
+    <path d="M31 52c0-4.7 8.1-8.5 18-8.5S66 47.3 66 52 58.2 60.5 48.5 60.5 31 56.7 31 52Z" stroke-width="3"></path>
+    <path d="M35 44H61" stroke-width="2"></path>
+  `,
+  review: `
+    <rect x="29" y="18" width="26" height="38" stroke-width="3"></rect>
+    <path d="M35 28H49M35 36H47" stroke-width="2"></path>
+    <circle cx="57" cy="45" r="9" stroke-width="3"></circle>
+    <path d="m62 51 7 7" stroke-width="3"></path>
+  `,
+  refactor: `
+    <path d="M29 27H63" stroke-width="3"></path>
+    <path d="m63 21 7 6-7 6Z" fill="currentColor" stroke="none"></path>
+    <path d="M67 48H33" stroke-width="3"></path>
+    <path d="m33 42-7 6 7 6Z" fill="currentColor" stroke="none"></path>
+  `,
+  explain: `
+    <rect x="27" y="19" width="42" height="31" rx="6" stroke-width="3"></rect>
+    <path d="m34 49v9l12-8" fill="currentColor" stroke="none"></path>
+    <path d="M35 29H61M35 38H54" stroke-width="2"></path>
+  `,
+  docs: `
+    <path d="M32 17H56L66 27V57H32V17Z"></path>
+    <path d="M56 17V28H66" stroke-width="3"></path>
+    <path d="M39 37H59M39 45H59" stroke-width="2"></path>
+  `,
+  ship: `
+    <path d="m48 15 18 28-18 16-18-16 18-28Z"></path>
+    <path d="M48 15V59M30 43H66" stroke-width="3"></path>
+  `,
+  record: `
+    <circle cx="48" cy="37" r="14" stroke-width="4"></circle>
+    <circle cx="48" cy="37" r="5" fill="currentColor" stroke="none"></circle>
+  `,
+  camera: `
+    <rect x="29" y="24" width="38" height="27" rx="5" stroke-width="4"></rect>
+    <circle cx="48" cy="37" r="6" stroke-width="3"></circle>
+  `,
+  terminal: `
+    <rect x="27" y="23" width="42" height="29" rx="5" stroke-width="3"></rect>
+    <path d="m35 32 7 6-7 6M47 44H58" stroke-width="3"></path>
+  `,
+  folder: `
+    <rect x="26" y="29" width="44" height="25" rx="4" stroke-width="4"></rect>
+    <path d="m28 29 10-7h14l6 7Z" fill="currentColor" stroke="none"></path>
+  `,
+  music: `
+    <circle cx="34.5" cy="48.5" r="5.5" fill="currentColor" stroke="none"></circle>
+    <circle cx="58.5" cy="44.5" r="5.5" fill="currentColor" stroke="none"></circle>
+    <path d="M39 47V24L63 20V44" stroke-width="4"></path>
+  `,
+  lock: `
+    <rect x="31" y="34" width="34" height="23" rx="4" stroke-width="4"></rect>
+    <path d="M36 34c0-8.3 5.4-15 12-15s12 6.7 12 15" stroke-width="4"></path>
+  `,
+  web: `
+    <circle cx="48" cy="37" r="19" stroke-width="3"></circle>
+    <path d="M29 37H67" stroke-width="2"></path>
+    <ellipse cx="48" cy="37" rx="9" ry="19" stroke-width="2"></ellipse>
+  `,
+  app: `
+    <rect x="31" y="20" width="34" height="35" rx="8" stroke-width="4"></rect>
+    <path d="M48 29V46" stroke-width="3"></path>
+  `
+};
+
+const deviceIconAliases = {
+  mic: "record",
+  monitor: "camera",
+  hotkey: "terminal",
+  keyboard: "terminal",
+  sound: "music",
+  volume: "music"
+};
+
 const actionCatalog = [
   { id: "scene", name: "Switch Scene", subtitle: "OBS Studio", description: "Scene: Starting Soon", icon: "camera", color: "#37b7ff", category: "stream", group: "Streaming" },
   { id: "mic", name: "Mute Microphone", subtitle: "Audio control", description: "Default microphone", icon: "mic", color: "#ef476f", category: "stream", group: "Streaming" },
@@ -358,6 +480,12 @@ function renderBuildInfo() {
 
 function iconMarkup(name) {
   return icons[name] || icons.plus;
+}
+
+function deviceIconMarkup(name) {
+  const icon = deviceIconAliases[name] || name;
+  const symbol = deviceIconSymbols[icon] || deviceIconSymbols.app;
+  return `<svg class="device-symbol" viewBox="0 0 96 96" aria-hidden="true">${symbol}</svg>`;
 }
 
 function createKeyData(tuple) {
@@ -954,6 +1082,7 @@ function keyScreenMarkup(key, secondary = false, playback = null) {
     "key-screen",
     previewUrl ? "has-custom-icon" : "",
     isSound ? "has-sound" : "",
+    !previewUrl && !isSound ? "has-device-symbol" : "",
     playback ? "sound-playing" : "",
     isAgentMonitored ? "agent-monitored" : "",
     isAgentMonitored ? (isAgentActive ? "agent-active" : "agent-idle") : ""
@@ -965,7 +1094,7 @@ function keyScreenMarkup(key, secondary = false, playback = null) {
   if (previewUrl) {
     return `<div class="${screenClass}" style="--key-color:${color}"><img src="${escapeHtml(previewUrl)}" alt="" draggable="false">${soundMarkup}${agentMarkup}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
   }
-  return `<div class="${screenClass}" style="--key-color:${color}">${isSound ? "" : iconMarkup(key.icon)}${soundMarkup}${agentMarkup}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
+  return `<div class="${screenClass}" style="--key-color:${color}">${isSound ? "" : deviceIconMarkup(key.icon)}${soundMarkup}${agentMarkup}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
 }
 
 function escapeHtml(value) {
