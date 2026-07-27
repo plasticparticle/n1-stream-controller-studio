@@ -61,5 +61,42 @@ class StatusDisplayTests(unittest.TestCase):
         self.assertEqual(n1_service.status_label(2, 7), "☀")
 
 
+class SoundDisplayTests(unittest.TestCase):
+    def setUp(self):
+        self.key = {
+            "id": "sound",
+            "title": "AIR HORN",
+            "color": "#37b7ff",
+            "soundLoop": True,
+            "sound": {
+                "duration": 1.2,
+                "waveform": [0.2, 0.5, 1.0, 0.4, 0.7, 0.3, 0.8, 0.25],
+            },
+        }
+
+    def test_sound_key_renders_waveform_in_both_states(self):
+        inactive = n1_service.render_key(self.key)
+        active = n1_service.render_sound_key(self.key, playing=True, progress=0.5)
+
+        self.assertEqual(inactive.size, n1_service.KEY_SIZE)
+        self.assertEqual(active.size, n1_service.KEY_SIZE)
+        self.assertNotEqual(inactive.getpixel((48, 43)), active.getpixel((48, 43)))
+
+    def test_sound_animation_tracks_clip_duration(self):
+        frames, delays = n1_service.load_sound_frames(self.key)
+
+        self.assertEqual(len(frames), 12)
+        self.assertEqual(len(delays), 12)
+        self.assertTrue(all(delay == 100 for delay in delays))
+        self.assertTrue(all(frame.startswith(b"\xff\xd8") for frame in frames))
+
+    def test_invalid_waveform_uses_bounded_fallback(self):
+        self.key["sound"]["waveform"] = [float("nan")]
+        self.assertEqual(
+            n1_service.sound_peaks(self.key),
+            list(n1_service.FALLBACK_WAVEFORM),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

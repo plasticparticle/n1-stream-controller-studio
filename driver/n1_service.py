@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import os
 import signal
 import sys
@@ -113,7 +114,86 @@ def draw_symbol(draw: ImageDraw.ImageDraw, icon: str, color: tuple[int, int, int
         draw.line((48, 29, 48, 46), fill=bright, width=3)
 
 
+FALLBACK_WAVEFORM = (
+    0.18, 0.34, 0.48, 0.30, 0.70, 0.42, 0.86, 0.56,
+    0.38, 0.72, 0.94, 0.48, 0.28, 0.62, 0.82, 0.40,
+    0.68, 0.90, 0.52, 0.32, 0.74, 0.58, 0.88, 0.46,
+    0.26, 0.54, 0.78, 0.44, 0.64, 0.36, 0.58, 0.24,
+)
+
+
+def sound_peaks(key: dict[str, Any]) -> list[float]:
+    sound = key.get("sound") if isinstance(key.get("sound"), dict) else {}
+    waveform = sound.get("waveform")
+    if not isinstance(waveform, list) or not 8 <= len(waveform) <= 64:
+        return list(FALLBACK_WAVEFORM)
+    peaks: list[float] = []
+    for value in waveform:
+        try:
+            peak = float(value)
+        except (TypeError, ValueError):
+            return list(FALLBACK_WAVEFORM)
+        if not math.isfinite(peak):
+            return list(FALLBACK_WAVEFORM)
+        peaks.append(max(0.08, min(1.0, peak)))
+    return peaks
+
+
+def render_sound_key(
+    key: dict[str, Any], playing: bool = False, progress: float = 0.0
+) -> Image.Image:
+    base = rgb(key.get("color", "#37b7ff"))
+    progress = max(0.0, min(1.0, float(progress)))
+    image = Image.new("RGB", KEY_SIZE)
+    pixels = image.load()
+    for y in range(KEY_SIZE[1]):
+        vertical = y / (KEY_SIZE[1] - 1)
+        factor = (0.42 - vertical * 0.16) if playing else (0.15 - vertical * 0.06)
+        for x in range(KEY_SIZE[0]):
+            glow = max(0.0, 1.0 - abs(x - 48) / 58) * (0.12 if playing else 0.025)
+            pixels[x, y] = tuple(
+                max(3, min(255, int(channel * (factor + glow)))) for channel in base
+            )
+
+    draw = ImageDraw.Draw(image)
+    bright = tuple(min(255, int(channel * 0.7) + 92) for channel in base)
+    dim = tuple(max(46, int(channel * 0.38)) for channel in base)
+    peaks = sound_peaks(key)
+    left, right = 9, 87
+    center_y = 43
+    played_x = left + int((right - left) * progress)
+    for index, peak in enumerate(peaks):
+        x = left + int((right - left) * (index + 0.5) / len(peaks))
+        height = max(2, int(peak * 18))
+        color = bright if playing and x <= played_x else dim
+        draw.line((x, center_y - height, x, center_y + height), fill=color, width=2)
+
+    timeline_y = 65
+    draw.line((left, timeline_y, right, timeline_y), fill=(92, 104, 108), width=1)
+    if playing:
+        draw.line((left, timeline_y, played_x, timeline_y), fill=(244, 255, 230), width=2)
+        draw.line((played_x, 20, played_x, 68), fill=(250, 255, 240), width=2)
+        draw.ellipse((7, 8, 13, 14), fill=(217, 250, 68))
+        status_font = find_font(8, bold=True)
+        status = "LOOP" if key.get("soundLoop") is True else "PLAY"
+        draw.text((17, 6), status, font=status_font, fill=(238, 246, 229))
+
+    draw.rounded_rectangle(
+        (2, 2, 93, 93),
+        radius=10,
+        outline=bright if playing else (48, 53, 57),
+        width=2,
+    )
+    title, font = fit_text(draw, str(key.get("title", "")), 82)
+    text_box = draw.textbbox((0, 0), title, font=font)
+    text_width = text_box[2] - text_box[0]
+    draw.text(((96 - text_width) / 2, 74), title, font=font, fill=(247, 250, 242))
+    return image
+
+
 def render_key(key: dict[str, Any]) -> Image.Image:
+    if key.get("id") == "sound" and isinstance(key.get("sound"), dict):
+        return render_sound_key(key)
     base = rgb(key.get("color", "#37b7ff"))
     image = Image.new("RGB", KEY_SIZE, tuple(max(3, int(channel * 0.08)) for channel in base))
     draw = ImageDraw.Draw(image)
@@ -193,6 +273,32 @@ def load_visual_frames(
     return encoded_frames, delays
 
 
+def load_sound_frames(
+    key: dict[str, Any], maximum_frames: int = 60
+) -> tuple[list[bytes], list[int]]:
+    sound = key.get("sound") if isinstance(key.get("sound"), dict) else {}
+    try:
+        duration = float(sound.get("duration") or 2.4)
+    except (TypeError, ValueError):
+        duration = 2.4
+    if not math.isfinite(duration):
+        duration = 2.4
+    duration = max(0.1, min(86_400.0, duration))
+    frame_count = max(6, min(maximum_frames, math.ceil(duration * 10)))
+    # The SDK schedules these delays in-process and accepts long intervals, so the
+    # full animation cycle stays aligned even for long ambience loops.
+    delay = max(60, round(duration * 1_000 / frame_count))
+    frames: list[bytes] = []
+    for frame_number in range(frame_count):
+        progress = frame_number / frame_count
+        stream = io.BytesIO()
+        render_sound_key(key, playing=True, progress=progress).save(
+            stream, "JPEG", quality=90, subsampling=0
+        )
+        frames.append(stream.getvalue())
+    return frames, [delay] * frame_count
+
+
 def apply_key_visual(
     device: StreamDockN1,
     index: int,
@@ -223,6 +329,30 @@ def apply_key_visual(
     if result != 0:
         raise RuntimeError(f"Image transfer failed for key {index}: {result}")
     return False
+
+
+def apply_sound_visual(
+    device: StreamDockN1,
+    index: int,
+    key: dict[str, Any],
+    temp_path: Path,
+    playing: bool,
+    secondary: bool = False,
+) -> bool:
+    if not playing:
+        return apply_key_visual(device, index, key, temp_path, secondary)
+
+    device.clear_key_gif(index)
+    frames, delays = load_sound_frames(key)
+    first_frame_path = temp_path / f"key-{index:02d}-sound.jpg"
+    first_frame_path.write_bytes(frames[0])
+    result = device.set_key_image(index, str(first_frame_path))
+    if result != 0:
+        raise RuntimeError(f"Image transfer failed for key {index}: {result}")
+    result = device.set_key_gif_stream(frames, delays, index)
+    if result != 0:
+        raise RuntimeError(f"Sound animation setup failed for key {index}: {result}")
+    return True
 
 
 def status_label(kind: int, page_number: int = 1) -> str:
@@ -514,6 +644,31 @@ def set_key_state(payload: dict[str, Any]) -> dict[str, Any]:
     return run_with_reconnect(lambda: _set_key_state_once(payload))
 
 
+def _set_sound_state_once(payload: dict[str, Any]) -> dict[str, Any]:
+    index = int(payload.get("key") or 0)
+    if index not in range(1, 16):
+        raise ValueError("Sound state index must be between 1 and 15")
+    key = payload.get("config")
+    if not isinstance(key, dict) or key.get("id") != "sound":
+        raise ValueError("Sound state requires a Play Sound key configuration")
+    playing = bool(payload.get("playing"))
+    secondary = bool(payload.get("secondary"))
+
+    with _device_lock, tempfile.TemporaryDirectory(prefix="n1-sound-state-") as temp_dir:
+        device = connect()
+        require_writable(device)
+        animated = apply_sound_visual(
+            device, index, key, Path(temp_dir), playing, secondary
+        )
+        device.refresh()
+        device.start_gif_loop()
+    return {"key": index, "playing": playing, "animated": animated}
+
+
+def set_sound_state(payload: dict[str, Any]) -> dict[str, Any]:
+    return run_with_reconnect(lambda: _set_sound_state_once(payload))
+
+
 def _set_brightness_once(payload: dict[str, Any]) -> dict[str, Any]:
     value = max(0, min(100, int(payload.get("brightness", 86))))
     with _device_lock:
@@ -568,6 +723,8 @@ def handle_command(message: dict[str, Any]) -> None:
             response(request_id, True, **identify(message.get("payload") or {}))
         elif command == "key_state":
             response(request_id, True, **set_key_state(message.get("payload") or {}))
+        elif command == "sound_state":
+            response(request_id, True, **set_sound_state(message.get("payload") or {}))
         elif command == "shutdown":
             response(request_id, True)
             shutdown()

@@ -66,6 +66,8 @@ struct TestActionInput {
     target: Option<String>,
     sound_id: Option<String>,
     sound_name: Option<String>,
+    sound_duration: Option<f64>,
+    sound_waveform: Option<Vec<f64>>,
     sound_press_behavior: Option<String>,
     sound_loop: Option<bool>,
 }
@@ -76,6 +78,8 @@ struct AppCore {
     active_config: Mutex<Option<Value>>,
     key_visual_states: Mutex<HashMap<u64, bool>>,
     active_sounds: Arc<Mutex<HashMap<i64, ActiveSound>>>,
+    sound_visual_revisions: Mutex<HashMap<i64, u64>>,
+    sound_visual_guard: Mutex<()>,
     recent_hardware_actions: Mutex<HashMap<String, Instant>>,
     pending_hardware_events: AtomicUsize,
     active_action_processes: Arc<AtomicUsize>,
@@ -348,6 +352,8 @@ impl AppCore {
             active_config: Mutex::new(active_config),
             key_visual_states: Mutex::new(HashMap::new()),
             active_sounds: Arc::new(Mutex::new(HashMap::new())),
+            sound_visual_revisions: Mutex::new(HashMap::new()),
+            sound_visual_guard: Mutex::new(()),
             recent_hardware_actions: Mutex::new(HashMap::new()),
             pending_hardware_events: AtomicUsize::new(0),
             active_action_processes: Arc::new(AtomicUsize::new(0)),
@@ -733,7 +739,7 @@ impl AppCore {
         Ok(materialized)
     }
 
-    fn test_action(&self, key: i64, action: TestActionInput) -> Result<Value, String> {
+    fn test_action(self: &Arc<Self>, key: i64, action: TestActionInput) -> Result<Value, String> {
         if !(1..=15).contains(&key) {
             return Err("Action key must be between 1 and 15".into());
         }
@@ -745,12 +751,13 @@ impl AppCore {
         Ok(json!({"ok": true}))
     }
 
-    fn execute_action(&self, action: &Value, key: i64) -> Result<(), String> {
+    fn execute_action(self: &Arc<Self>, action: &Value, key: i64) -> Result<(), String> {
         let name = action_name(action, key);
         let is_sound = action.get("id").and_then(Value::as_str) == Some("sound");
         if is_sound {
             let active = lock(&self.active_sounds).remove(&key);
             if let Some(active) = active {
+                self.update_sound_visual(key, action, false);
                 let restart = !loop_sound_until_pressed(action) && restart_sound_on_press(action);
                 let (complete, stopped) = mpsc::channel();
                 let stop_sent = active.stop.send(complete).is_ok();
@@ -763,6 +770,8 @@ impl AppCore {
                         "ok": true,
                         "key": key,
                         "name": name,
+                        "playbackId": active.pid,
+                        "sound": true,
                         "stopped": true
                     }));
                     return Ok(());
@@ -788,6 +797,7 @@ impl AppCore {
                     "ok": false,
                     "key": key,
                     "name": &name,
+                    "sound": is_sound,
                     "error": &error
                 }));
                 return Err(error);
@@ -812,8 +822,20 @@ impl AppCore {
             match spawn_resolved_action(&resolved, &self.project_root) {
                 Ok(child) => {
                     if is_sound {
+                        let playback_id = child.id();
                         let replay = loop_sound_until_pressed(action).then_some(resolved);
-                        self.track_sound(key, child, replay);
+                        self.emit(json!({
+                            "event": "action",
+                            "ok": true,
+                            "key": key,
+                            "name": &name,
+                            "playbackId": playback_id,
+                            "sound": true,
+                            "playing": true,
+                            "looping": loop_sound_until_pressed(action)
+                        }));
+                        self.track_sound(key, child, replay, action.clone(), name.clone());
+                        self.update_sound_visual(key, action, true);
                     } else {
                         let active_action_processes = self.active_action_processes.clone();
                         thread::spawn(move || {
@@ -822,14 +844,16 @@ impl AppCore {
                             active_action_processes.fetch_sub(1, Ordering::AcqRel);
                         });
                     }
-                    self.emit(json!({
-                        "event": "action",
-                        "ok": true,
-                        "key": key,
-                        "name": name,
-                        "playing": is_sound,
-                        "looping": is_sound && loop_sound_until_pressed(action)
-                    }));
+                    if !is_sound {
+                        self.emit(json!({
+                            "event": "action",
+                            "ok": true,
+                            "key": key,
+                            "name": &name,
+                            "playing": false,
+                            "looping": false
+                        }));
+                    }
                     return Ok(());
                 }
                 Err(error) => {
@@ -852,16 +876,24 @@ impl AppCore {
             "ok": false,
             "key": key,
             "name": name,
+            "sound": is_sound,
             "error": error
         }));
         Err(error)
     }
 
-    fn track_sound(&self, key: i64, mut child: Child, replay: Option<ResolvedAction>) {
+    fn track_sound(
+        self: &Arc<Self>,
+        key: i64,
+        mut child: Child,
+        replay: Option<ResolvedAction>,
+        action: Value,
+        name: String,
+    ) {
         let pid = child.id();
         let (stop, stop_requested) = mpsc::channel();
         lock(&self.active_sounds).insert(key, ActiveSound { pid, stop });
-        let active_sounds = self.active_sounds.clone();
+        let core = self.clone();
         let project_root = self.project_root.clone();
         thread::spawn(move || {
             let mut completion = None;
@@ -921,13 +953,70 @@ impl AppCore {
                     }
                 }
             }
-            let mut active = lock(&active_sounds);
-            if active.get(&key).is_some_and(|sound| sound.pid == pid) {
+            let mut active = lock(&core.active_sounds);
+            let was_current = active.get(&key).is_some_and(|sound| sound.pid == pid);
+            if was_current {
                 active.remove(&key);
             }
             drop(active);
+            if was_current {
+                core.update_sound_visual(key, &action, false);
+                core.emit(json!({
+                    "event": "action",
+                    "ok": true,
+                    "key": key,
+                    "name": name,
+                    "playbackId": pid,
+                    "sound": true,
+                    "finished": true
+                }));
+            }
             if let Some(complete) = completion {
                 let _ = complete.send(());
+            }
+        });
+    }
+
+    fn update_sound_visual(self: &Arc<Self>, key: i64, action: &Value, playing: bool) {
+        if self.driver.public_state().status != "ready" {
+            return;
+        }
+        let revision = {
+            let mut revisions = lock(&self.sound_visual_revisions);
+            let revision = revisions.get(&key).copied().unwrap_or(0).wrapping_add(1);
+            revisions.insert(key, revision);
+            revision
+        };
+        let action = action.clone();
+        let core = self.clone();
+        thread::spawn(move || {
+            let _guard = lock(&core.sound_visual_guard);
+            if lock(&core.sound_visual_revisions).get(&key).copied() != Some(revision) {
+                return;
+            }
+            let result = core.materialize_key(&action).and_then(|config| {
+                let secondary = lock(&core.key_visual_states)
+                    .get(&(key as u64))
+                    .copied()
+                    .unwrap_or(false);
+                core.driver.request(
+                    core.clone(),
+                    "sound_state",
+                    json!({
+                        "key": key,
+                        "playing": playing,
+                        "secondary": secondary,
+                        "config": config
+                    }),
+                    Duration::from_secs(30),
+                )
+            });
+            if let Err(error) = result {
+                core.emit(json!({
+                    "event": "driver_log",
+                    "level": "warning",
+                    "message": format!("Unable to update sound key {key}: {error}")
+                }));
             }
         });
     }
@@ -1034,7 +1123,11 @@ impl AppCore {
             self.apply_key_visual_state(key_number, &action, next_state, behavior);
         } else if secondary && state == 0 && behavior != "toggle" {
             lock(&self.key_visual_states).insert(key_number, false);
-            self.apply_key_visual_state(key_number, &action, false, behavior);
+            let sound_is_playing = action.get("id").and_then(Value::as_str) == Some("sound")
+                && lock(&self.active_sounds).contains_key(&(key_number as i64));
+            if !sound_is_playing {
+                self.apply_key_visual_state(key_number, &action, false, behavior);
+            }
         }
 
         if state == 1 {
@@ -1351,7 +1444,21 @@ fn validated_test_action(input: TestActionInput) -> Result<Value, String> {
             .chars()
             .take(120)
             .collect::<String>();
-        action["sound"] = json!({"id": id, "name": name});
+        let duration = input
+            .sound_duration
+            .filter(|duration| duration.is_finite() && (0.01..=86_400.0).contains(duration));
+        let waveform = input.sound_waveform.filter(|waveform| {
+            (8..=64).contains(&waveform.len())
+                && waveform
+                    .iter()
+                    .all(|peak| peak.is_finite() && (0.0..=1.0).contains(peak))
+        });
+        action["sound"] = json!({
+            "id": id,
+            "name": name,
+            "duration": duration,
+            "waveform": waveform
+        });
     }
     Ok(action)
 }
@@ -1403,6 +1510,22 @@ fn validate_sync_payload(payload: &Value) -> Result<(), String> {
         {
             return Err("Invalid sound asset ID".into());
         }
+        if let Some(sound) = key.get("sound").filter(|sound| sound.is_object()) {
+            if let Some(duration) = sound.get("duration").and_then(Value::as_f64)
+                && (!duration.is_finite() || !(0.01..=86_400.0).contains(&duration))
+            {
+                return Err("Invalid sound duration".into());
+            }
+            if let Some(waveform) = sound.get("waveform").and_then(Value::as_array)
+                && (!(8..=64).contains(&waveform.len())
+                    || waveform.iter().any(|peak| {
+                        peak.as_f64()
+                            .is_none_or(|peak| !peak.is_finite() || !(0.0..=1.0).contains(&peak))
+                    }))
+            {
+                return Err("Invalid sound waveform".into());
+            }
+        }
         for pointer in ["/visuals/primary/id", "/visuals/secondary/id"] {
             if let Some(asset_id) = key.pointer(pointer).and_then(Value::as_str)
                 && (!valid_stored_asset_id(asset_id)
@@ -1424,7 +1547,12 @@ fn validate_json_limits(value: &Value, depth: usize) -> Result<(), String> {
             Err("Configuration contains an oversized text field".into())
         }
         Value::Array(values) => {
-            if values.len() > 18 {
+            let maximum = if values.iter().all(Value::is_number) {
+                64
+            } else {
+                18
+            };
+            if values.len() > maximum {
                 return Err("Configuration contains an oversized list".into());
             }
             for value in values {
@@ -1985,6 +2113,31 @@ mod tests {
         assert!(
             validate_sync_payload(
                 &json!({"profile": "streaming", "keys": vec![malicious_key; 15]})
+            )
+            .is_err()
+        );
+        let sound_key = json!({
+            "id": "sound",
+            "sound": {
+                "id": format!("{}.wav", "a".repeat(64)),
+                "duration": 2.5,
+                "waveform": vec![0.25; 40]
+            }
+        });
+        assert!(
+            validate_sync_payload(&json!({"profile": "streaming", "keys": vec![sound_key; 15]}))
+                .is_ok()
+        );
+        let invalid_waveform = json!({
+            "id": "sound",
+            "sound": {
+                "id": format!("{}.wav", "a".repeat(64)),
+                "waveform": vec![0.25; 65]
+            }
+        });
+        assert!(
+            validate_sync_payload(
+                &json!({"profile": "streaming", "keys": vec![invalid_waveform; 15]})
             )
             .is_err()
         );

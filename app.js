@@ -47,6 +47,8 @@ const backend = {
         target: String(action?.command || action?.target || "").slice(0, 2048),
         soundId: sound?.id || null,
         soundName: sound?.name || null,
+        soundDuration: Number(sound?.duration) || null,
+        soundWaveform: Array.isArray(sound?.waveform) ? sound.waveform : null,
         soundPressBehavior: action?.soundPressBehavior || "stop",
         soundLoop: action?.soundLoop === true
       }
@@ -143,6 +145,8 @@ let autoSyncAnnounce = false;
 let pendingIconSlot = null;
 let pendingSoundTarget = null;
 const runtimeVisualStates = new Map();
+const soundPlaybackStates = new Map();
+const soundPlaybackByKey = new Map();
 
 const keyGrid = document.querySelector("#keyGrid");
 const actionGroups = document.querySelector("#actionGroups");
@@ -337,15 +341,58 @@ function assetPreviewUrl(visual) {
   return visual?.url || "";
 }
 
-function keyScreenMarkup(key, secondary = false) {
+const fallbackWaveform = [
+  .18, .34, .48, .3, .7, .42, .86, .56, .38, .72, .94, .48,
+  .28, .62, .82, .4, .68, .9, .52, .32, .74, .58, .88, .46,
+  .26, .54, .78, .44, .64, .36, .58, .24
+];
+
+function soundWaveformMarkup(sound, playback) {
+  const source = Array.isArray(sound?.waveform) && sound.waveform.length >= 8
+    ? sound.waveform
+    : fallbackWaveform;
+  const peaks = source.slice(0, 64).map((peak) =>
+    Math.max(.08, Math.min(1, Number(peak) || 0))
+  );
+  const step = 100 / peaks.length;
+  const path = peaks.map((peak, index) => {
+    const x = (step * index + step / 2).toFixed(2);
+    const height = (peak * 13).toFixed(2);
+    return `M${x} ${16 - height}V${16 + height}`;
+  }).join("");
+  const duration = Math.max(.1, Number(playback?.duration || sound?.duration) || 1);
+  const elapsed = playback ? Math.max(0, (performance.now() - playback.startedAt) / 1000) : 0;
+  const cycleElapsed = playback?.looping ? elapsed % duration : Math.min(elapsed, duration);
+  const style = playback
+    ? ` style="--sound-duration:${duration.toFixed(3)}s;--sound-delay:-${cycleElapsed.toFixed(3)}s"`
+    : "";
+  return `
+    <span class="sound-visual${playback ? ` playing${playback.looping ? " looping" : ""}` : ""}"${style} aria-hidden="true">
+      <svg class="sound-waveform" viewBox="0 0 100 32" preserveAspectRatio="none"><path d="${path}"></path></svg>
+      ${playback ? `<svg class="sound-waveform sound-waveform-played" viewBox="0 0 100 32" preserveAspectRatio="none"><path d="${path}"></path></svg>` : ""}
+      <span class="sound-timeline"></span>
+      ${playback ? '<span class="sound-playhead"></span>' : ""}
+    </span>
+  `;
+}
+
+function keyScreenMarkup(key, secondary = false, playback = null) {
   if (!key) return '<div class="key-screen empty"><span class="empty-plus">+</span></div>';
   const visual = selectedVisual(key, secondary);
   const previewUrl = assetPreviewUrl(visual);
   const color = safeColor(key.color);
+  const isSound = key.id === "sound" && Boolean(key.sound);
+  const screenClass = [
+    "key-screen",
+    previewUrl ? "has-custom-icon" : "",
+    isSound ? "has-sound" : "",
+    playback ? "sound-playing" : ""
+  ].filter(Boolean).join(" ");
+  const soundMarkup = isSound ? soundWaveformMarkup(key.sound, playback) : "";
   if (previewUrl) {
-    return `<div class="key-screen has-custom-icon" style="--key-color:${color}"><img src="${escapeHtml(previewUrl)}" alt="" draggable="false"><span class="key-label">${escapeHtml(key.title)}</span></div>`;
+    return `<div class="${screenClass}" style="--key-color:${color}"><img src="${escapeHtml(previewUrl)}" alt="" draggable="false">${soundMarkup}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
   }
-  return `<div class="key-screen" style="--key-color:${color}">${iconMarkup(key.icon)}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
+  return `<div class="${screenClass}" style="--key-color:${color}">${isSound ? "" : iconMarkup(key.icon)}${soundMarkup}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
 }
 
 function escapeHtml(value) {
@@ -362,6 +409,49 @@ function formatFileSize(bytes) {
   const size = Number(bytes) || 0;
   if (size < 1_000_000) return `${Math.max(1, Math.round(size / 1_000))} KB`;
   return `${(size / 1_000_000).toFixed(1)} MB`;
+}
+
+async function analyzeSoundBuffer(buffer) {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return null;
+  const context = new AudioContextClass();
+  try {
+    const audio = await context.decodeAudioData(buffer.slice(0));
+    const peakCount = 40;
+    const waveform = [];
+    for (let peakIndex = 0; peakIndex < peakCount; peakIndex += 1) {
+      const start = Math.floor(audio.length * peakIndex / peakCount);
+      const end = Math.max(start + 1, Math.floor(audio.length * (peakIndex + 1) / peakCount));
+      const stride = Math.max(1, Math.floor((end - start) / 160));
+      let peak = 0;
+      for (let channelIndex = 0; channelIndex < audio.numberOfChannels; channelIndex += 1) {
+        const channel = audio.getChannelData(channelIndex);
+        for (let sample = start; sample < end; sample += stride) {
+          peak = Math.max(peak, Math.abs(channel[sample] || 0));
+        }
+      }
+      waveform.push(peak);
+    }
+    const maximum = Math.max(...waveform, .01);
+    return {
+      duration: Number(audio.duration.toFixed(3)),
+      waveform: waveform.map((peak) => Number(Math.max(.08, peak / maximum).toFixed(3)))
+    };
+  } finally {
+    await context.close().catch(() => {});
+  }
+}
+
+async function analyzeSoundFile(file) {
+  return analyzeSoundBuffer(await file.arrayBuffer());
+}
+
+async function analyzeStoredSound(sound) {
+  const source = assetPreviewUrl(sound);
+  if (!source) return null;
+  const response = await fetch(source);
+  if (!response.ok) throw new Error(`Unable to read ${sound.name || "sound"}`);
+  return analyzeSoundBuffer(await response.arrayBuffer());
 }
 
 function renderPageTabs() {
@@ -456,11 +546,18 @@ function deleteCurrentPage() {
 function renderKeys() {
   keyGrid.innerHTML = "";
   activeLayout().forEach((key, index) => {
+    const stateKey = visualStateKey(currentProfile, activePageIndex(), index);
+    const playback = soundPlaybackStates.get(stateKey) || null;
     const button = document.createElement("button");
-    button.className = `deck-key${index === selectedIndex ? " selected" : ""}`;
+    button.className = `deck-key${index === selectedIndex ? " selected" : ""}${playback ? " sound-playing" : ""}`;
     button.dataset.index = index;
-    button.setAttribute("aria-label", key ? `Key ${index + 1}: ${key.title}` : `Key ${index + 1}: empty`);
-    button.innerHTML = keyScreenMarkup(key, getRuntimeVisualState(index));
+    button.setAttribute(
+      "aria-label",
+      key
+        ? `Key ${index + 1}: ${key.title}${playback ? ", sound playing" : ""}`
+        : `Key ${index + 1}: empty`
+    );
+    button.innerHTML = keyScreenMarkup(key, getRuntimeVisualState(index), playback);
     button.addEventListener("click", () => handleKeyClick(index));
     button.addEventListener("dragover", (event) => {
       event.preventDefault();
@@ -540,10 +637,13 @@ function renderActions() {
 
 function updateInspector() {
   const key = activeLayout()[selectedIndex];
+  const playback = soundPlaybackStates.get(
+    visualStateKey(currentProfile, activePageIndex(), selectedIndex)
+  ) || null;
   selectedKeyNumber.textContent = String(selectedIndex + 1).padStart(2, "0");
   keyTitle.value = key?.title || "";
   document.querySelector("#titleCount").textContent = `${keyTitle.value.length}/18`;
-  miniKey.innerHTML = keyScreenMarkup(key, getRuntimeVisualState(selectedIndex));
+  miniKey.innerHTML = keyScreenMarkup(key, getRuntimeVisualState(selectedIndex), playback);
 
   const name = key?.name || "Empty key";
   const subtitle = key?.subtitle || "Choose an action";
@@ -1010,7 +1110,10 @@ document.querySelector("#soundUpload").addEventListener("change", async (event) 
   card.classList.add("uploading");
   try {
     const dataUrl = await readFileAsDataUrl(file);
-    const result = await backend.storeSound({ name: file.name, dataUrl });
+    const [result, analysis] = await Promise.all([
+      backend.storeSound({ name: file.name, dataUrl }),
+      analyzeSoundFile(file).catch(() => null)
+    ]);
     if (!result.ok) throw new Error(result.error || "Sound upload failed");
 
     const key = pageLayouts[target.profile]?.[target.page]?.[target.index];
@@ -1018,7 +1121,7 @@ document.querySelector("#soundUpload").addEventListener("change", async (event) 
     const isCurrentPage =
       target.profile === currentProfile && target.page === activePageIndex();
     if (isCurrentPage) snapshot();
-    key.sound = result.sound;
+    key.sound = { ...result.sound, ...(analysis || {}) };
     key.target = result.sound.name;
     key.description = result.sound.name;
     if (isCurrentPage) renderKeys();
@@ -1327,6 +1430,35 @@ function handleHardwareEvent(message) {
     return;
   }
   if (message.event === "action") {
+    const keyIndex = Number(message.key) - 1;
+    if (keyIndex >= 0 && keyIndex < 15) {
+      if (message.playing) {
+        const previousStateKey = soundPlaybackByKey.get(keyIndex);
+        if (previousStateKey) soundPlaybackStates.delete(previousStateKey);
+        const stateKey = visualStateKey(currentProfile, activePageIndex(), keyIndex);
+        const key = activeLayout()?.[keyIndex];
+        soundPlaybackStates.set(stateKey, {
+          startedAt: performance.now(),
+          duration: Math.max(.1, Number(key?.sound?.duration) || 1),
+          looping: message.looping === true,
+          playbackId: Number(message.playbackId) || null
+        });
+        soundPlaybackByKey.set(keyIndex, stateKey);
+        renderKeys();
+      } else if (message.stopped || message.finished || (message.ok === false && message.sound)) {
+        const stateKey = soundPlaybackByKey.get(keyIndex);
+        const playback = stateKey ? soundPlaybackStates.get(stateKey) : null;
+        const playbackMatches = !message.playbackId
+          || !playback?.playbackId
+          || Number(message.playbackId) === playback.playbackId;
+        if (stateKey && playbackMatches) {
+          soundPlaybackStates.delete(stateKey);
+          soundPlaybackByKey.delete(keyIndex);
+          renderKeys();
+        }
+      }
+    }
+    if (message.finished) return;
     let title = message.ok ? "Hardware action triggered" : "Action could not run";
     if (message.stopped) title = "Sound stopped";
     else if (message.looping) title = "Sound looping";
@@ -1344,6 +1476,7 @@ function handleHardwareEvent(message) {
 
 async function restoreAssetPaths() {
   const assets = [];
+  const soundsToAnalyze = new Map();
   Object.values(pageLayouts).forEach((pages) => {
     pages.forEach((layout) => {
       layout.forEach((key) => {
@@ -1352,6 +1485,14 @@ async function restoreAssetPaths() {
           if (visual?.id && !visual.path) assets.push(visual);
         });
         if (key?.sound?.id && !key.sound.path) assets.push(key.sound);
+        if (
+          key?.sound?.id
+          && (!Array.isArray(key.sound.waveform) || !Number(key.sound.duration))
+        ) {
+          const sounds = soundsToAnalyze.get(key.sound.id) || [];
+          sounds.push(key.sound);
+          soundsToAnalyze.set(key.sound.id, sounds);
+        }
       });
     });
   });
@@ -1362,6 +1503,15 @@ async function restoreAssetPaths() {
       // Missing assets remain unavailable until the user replaces them.
     }
   }));
+  await Promise.all([...soundsToAnalyze.values()].map(async (sounds) => {
+    try {
+      const analysis = await analyzeStoredSound(sounds[0]);
+      if (analysis) sounds.forEach((sound) => Object.assign(sound, analysis));
+    } catch {
+      // Unsupported codecs retain the compact fallback waveform.
+    }
+  }));
+  persistPages();
   renderKeys();
 }
 
