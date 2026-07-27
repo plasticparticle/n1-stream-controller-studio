@@ -880,13 +880,13 @@ impl AppCore {
             let active = lock(&self.active_sounds).remove(&key);
             if let Some(active) = active {
                 self.update_sound_visual(key, action, false);
-                let restart = !loop_sound_until_pressed(action) && restart_sound_on_press(action);
+                let restart = restart_active_sound_on_press(action);
                 let (complete, stopped) = mpsc::channel();
                 let stop_sent = active.stop.send(complete).is_ok();
                 if stop_sent && restart {
                     let _ = stopped.recv_timeout(Duration::from_secs(1));
                 }
-                if stop_sent && !restart {
+                if !restart {
                     self.emit(json!({
                         "event": "action",
                         "ok": true,
@@ -1890,6 +1890,10 @@ fn loop_sound_until_pressed(action: &Value) -> bool {
     action.get("soundLoop").and_then(Value::as_bool) == Some(true)
 }
 
+fn restart_active_sound_on_press(action: &Value) -> bool {
+    !loop_sound_until_pressed(action) && restart_sound_on_press(action)
+}
+
 fn has_asset_extension(id: &str, allowed: &[&str]) -> bool {
     id.get(64..)
         .is_some_and(|extension| allowed.contains(&extension))
@@ -2619,6 +2623,17 @@ mod tests {
         assert!(loop_sound_until_pressed(
             &json!({"id": "sound", "soundLoop": true})
         ));
+        assert!(!restart_active_sound_on_press(
+            &json!({"id": "sound", "soundPressBehavior": "stop"})
+        ));
+        assert!(restart_active_sound_on_press(
+            &json!({"id": "sound", "soundPressBehavior": "restart"})
+        ));
+        assert!(!restart_active_sound_on_press(&json!({
+            "id": "sound",
+            "soundPressBehavior": "restart",
+            "soundLoop": true
+        })));
     }
 
     #[test]
