@@ -84,7 +84,30 @@ def fit_text(draw: ImageDraw.ImageDraw, text: str, max_width: int) -> tuple[str,
 def draw_symbol(draw: ImageDraw.ImageDraw, icon: str, color: tuple[int, int, int]) -> None:
     cx, cy = 48, 37
     bright = tuple(min(255, channel + 55) for channel in color)
-    if icon in {"record", "mic"}:
+    if icon == "screenshotFull":
+        draw.line((28, 29, 28, 20, 37, 20), fill=bright, width=3)
+        draw.line((59, 20, 68, 20, 68, 29), fill=bright, width=3)
+        draw.line((28, 45, 28, 54, 37, 54), fill=bright, width=3)
+        draw.line((59, 54, 68, 54, 68, 45), fill=bright, width=3)
+        draw.ellipse((41, 30, 55, 44), outline=bright, width=3)
+    elif icon == "screenshotArea":
+        draw.line((27, 29, 27, 20, 36, 20), fill=bright, width=3)
+        draw.line((60, 20, 69, 20, 69, 29), fill=bright, width=3)
+        draw.line((27, 45, 27, 54, 36, 54), fill=bright, width=3)
+        draw.line((60, 54, 69, 54, 69, 45), fill=bright, width=3)
+        for x in range(36, 61, 7):
+            draw.line((x, 29, min(x + 3, 60), 29), fill=bright, width=2)
+            draw.line((x, 46, min(x + 3, 60), 46), fill=bright, width=2)
+        for y in range(29, 47, 6):
+            draw.line((36, y, 36, min(y + 3, 46)), fill=bright, width=2)
+            draw.line((60, y, 60, min(y + 3, 46)), fill=bright, width=2)
+    elif icon == "screenshotWindow":
+        draw.rounded_rectangle((25, 19, 71, 55), radius=5, outline=bright, width=3)
+        draw.line((25, 29, 71, 29), fill=bright, width=2)
+        draw.ellipse((31, 23, 34, 26), fill=bright)
+        draw.ellipse((37, 23, 40, 26), fill=bright)
+        draw.rectangle((34, 35, 62, 49), outline=bright, width=2)
+    elif icon in {"record", "mic"}:
         draw.ellipse((34, 23, 62, 51), outline=bright, width=4)
         draw.ellipse((43, 32, 53, 42), fill=bright)
     elif icon in {"camera", "monitor"}:

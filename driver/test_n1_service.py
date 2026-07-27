@@ -121,5 +121,25 @@ class SoundDisplayTests(unittest.TestCase):
         self.assertEqual(device.calls[1][0:2], ("set_key_image", 3))
 
 
+class ScreenshotDisplayTests(unittest.TestCase):
+    def test_screenshot_actions_render_distinct_generated_icons(self):
+        rendered = []
+        for icon in ("screenshotFull", "screenshotArea", "screenshotWindow"):
+            rendered.append(
+                n1_service.render_key(
+                    {
+                        "id": f"test-{icon}",
+                        "title": "CAPTURE",
+                        "color": "#37b7ff",
+                        "icon": icon,
+                    }
+                )
+            )
+
+        self.assertTrue(all(image.size == n1_service.KEY_SIZE for image in rendered))
+        self.assertNotEqual(rendered[0].tobytes(), rendered[1].tobytes())
+        self.assertNotEqual(rendered[1].tobytes(), rendered[2].tobytes())
+
+
 if __name__ == "__main__":
     unittest.main()

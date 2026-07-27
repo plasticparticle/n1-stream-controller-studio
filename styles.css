@@ -1918,6 +1918,14 @@ kbd {
   min-width: 0;
 }
 
+.screenshot-settings {
+  min-width: 0;
+}
+
+.screenshot-output-toggle {
+  margin-top: 8px;
+}
+
 .sound-file-card {
   position: relative;
   min-width: 0;

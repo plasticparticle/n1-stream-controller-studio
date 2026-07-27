@@ -12,7 +12,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
@@ -70,6 +70,7 @@ struct TestActionInput {
     sound_waveform: Option<Vec<f64>>,
     sound_press_behavior: Option<String>,
     sound_loop: Option<bool>,
+    screenshot_clipboard: Option<bool>,
 }
 
 struct AppCore {
@@ -778,6 +779,7 @@ impl AppCore {
     fn execute_action(self: &Arc<Self>, action: &Value, key: i64) -> Result<(), String> {
         let name = action_name(action, key);
         let is_sound = action.get("id").and_then(Value::as_str) == Some("sound");
+        let is_screenshot = screenshot_kind(action).is_some();
         if is_sound {
             let active = lock(&self.active_sounds).remove(&key);
             if let Some(active) = active {
@@ -804,6 +806,8 @@ impl AppCore {
         }
         let resolved = if is_sound {
             self.resolve_sound_commands(action)
+        } else if is_screenshot {
+            self.resolve_screenshot_commands(action)
         } else if is_shell_action(action) && !self.allow_shell_actions {
             Err(format!(
                 "Shell actions are disabled. Set {SHELL_ACTION_OPT_IN}=1 before starting Studio to opt in."
@@ -890,6 +894,8 @@ impl AppCore {
         }
         let error = if is_sound {
             "No supported audio player is installed (tried PipeWire, PulseAudio, GStreamer, ffplay, mpv, VLC, and mpg123)".to_string()
+        } else if is_screenshot {
+            "No supported screenshot utility is installed (tried GNOME Screenshot, Spectacle, Flameshot, and Grim)".to_string()
         } else {
             last_error
                 .map(|error| error.to_string())
@@ -1076,6 +1082,33 @@ impl AppCore {
             ));
         }
         Ok(sound_player_commands(&path))
+    }
+
+    fn resolve_screenshot_commands(&self, action: &Value) -> Result<Vec<ResolvedAction>, String> {
+        let kind = screenshot_kind(action)
+            .ok_or_else(|| "Unsupported screenshot capture mode".to_string())?;
+        let clipboard = action
+            .get("screenshotClipboard")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let output_path = if clipboard {
+            None
+        } else {
+            let screenshots = self
+                .app
+                .path()
+                .picture_dir()
+                .map_err(|error| format!("Unable to find the Pictures folder: {error}"))?
+                .join("Screenshots");
+            fs::create_dir_all(&screenshots)
+                .map_err(|error| format!("Unable to create the Screenshots folder: {error}"))?;
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            Some(screenshots.join(format!("Screenshot-{timestamp}.png")))
+        };
+        Ok(screenshot_commands(kind, clipboard, output_path.as_deref()))
     }
 
     fn handle_hardware_input(self: Arc<Self>, event: Value) {
@@ -1332,6 +1365,75 @@ fn sound_player_commands(path: &Path) -> Vec<ResolvedAction> {
     commands
 }
 
+fn screenshot_kind(action: &Value) -> Option<&'static str> {
+    match action.get("id").and_then(Value::as_str)? {
+        "screenshot-full" => Some("full"),
+        "screenshot-area" => Some("area"),
+        "screenshot-window" => Some("window"),
+        _ => None,
+    }
+}
+
+fn screenshot_commands(
+    kind: &str,
+    clipboard: bool,
+    output_path: Option<&Path>,
+) -> Vec<ResolvedAction> {
+    let direct = |program: &str, args: Vec<String>| ResolvedAction {
+        program: program.into(),
+        args,
+    };
+    let output = output_path.map(|path| path.to_string_lossy().into_owned());
+    let mut commands = Vec::new();
+
+    let mut gnome_args = match kind {
+        "area" => vec!["--area".into()],
+        "window" => vec!["--window".into()],
+        _ => Vec::new(),
+    };
+    if clipboard {
+        gnome_args.push("--clipboard".into());
+    } else if let Some(output) = output.as_ref() {
+        gnome_args.extend(["--file".into(), output.clone()]);
+    }
+    commands.push(direct("gnome-screenshot", gnome_args));
+
+    let spectacle_mode = match kind {
+        "area" => "-r",
+        "window" => "-a",
+        _ => "-f",
+    };
+    let mut spectacle_args = vec!["-b".into(), "-n".into(), spectacle_mode.into()];
+    if clipboard {
+        spectacle_args.push("-c".into());
+    } else if let Some(output) = output.as_ref() {
+        spectacle_args.extend(["-o".into(), output.clone()]);
+    }
+    commands.push(direct("spectacle", spectacle_args));
+
+    if matches!(kind, "full" | "area") {
+        let mut flameshot_args = if kind == "area" {
+            vec!["gui".into(), "--accept-on-select".into()]
+        } else {
+            vec!["full".into()]
+        };
+        if clipboard {
+            flameshot_args.push("--clipboard".into());
+        } else if let Some(output) = output.as_ref() {
+            flameshot_args.extend(["--path".into(), output.clone()]);
+        }
+        commands.push(direct("flameshot", flameshot_args));
+    }
+
+    if kind == "full"
+        && !clipboard
+        && let Some(output) = output
+    {
+        commands.push(direct("grim", vec![output]));
+    }
+    commands
+}
+
 fn resolve_action_command(action: &Value, allow_shell_actions: bool) -> Option<ResolvedAction> {
     let id = action.get("id").and_then(Value::as_str)?;
     let target = action
@@ -1456,7 +1558,8 @@ fn validated_test_action(input: TestActionInput) -> Result<Value, String> {
         "id": input.id,
         "target": target,
         "soundPressBehavior": behavior,
-        "soundLoop": input.sound_loop.unwrap_or(false)
+        "soundLoop": input.sound_loop.unwrap_or(false),
+        "screenshotClipboard": input.screenshot_clipboard.unwrap_or(false)
     });
     if let Some(id) = input.sound_id {
         if !valid_stored_asset_id(&id) || !has_asset_extension(&id, SOUND_EXTENSIONS) {
@@ -1522,6 +1625,13 @@ fn validate_sync_payload(payload: &Value) -> Result<(), String> {
             .ok_or_else(|| "Each configured key must have an action type".to_string())?;
         if !valid_action_id(id) {
             return Err(format!("Unsupported action type: {id}"));
+        }
+        if screenshot_kind(key).is_some()
+            && key
+                .get("screenshotClipboard")
+                .is_some_and(|value| !value.is_boolean())
+        {
+            return Err("Screenshot clipboard settings must be true or false".into());
         }
         if let Some(color) = object.get("color").and_then(Value::as_str)
             && !valid_color(color)
@@ -1614,6 +1724,9 @@ fn valid_action_id(id: &str) -> bool {
             | "folder"
             | "website"
             | "sound"
+            | "screenshot-full"
+            | "screenshot-area"
+            | "screenshot-window"
             | "music"
             | "lock"
     ) || (id.starts_with("custom-")
@@ -2079,6 +2192,39 @@ mod tests {
     }
 
     #[test]
+    fn builds_literal_screenshot_commands_for_each_capture_mode() {
+        let output = Path::new("/tmp/Screenshot;still-a-filename.png");
+        for (action_id, expected_mode) in [
+            ("screenshot-full", "full"),
+            ("screenshot-area", "area"),
+            ("screenshot-window", "window"),
+        ] {
+            let action = json!({"id": action_id});
+            assert_eq!(screenshot_kind(&action), Some(expected_mode));
+            let commands = screenshot_commands(expected_mode, false, Some(output));
+            assert!(!commands.is_empty());
+            assert!(commands.iter().all(|command| command.program != "sh"));
+            assert!(commands.iter().all(|command| {
+                command
+                    .args
+                    .iter()
+                    .any(|argument| argument == output.to_str().unwrap())
+            }));
+        }
+
+        let clipboard = screenshot_commands("area", true, None);
+        assert!(clipboard.iter().any(|command| {
+            command.program == "gnome-screenshot" && command.args == ["--area", "--clipboard"]
+        }));
+        assert!(clipboard.iter().all(|command| {
+            !command
+                .args
+                .iter()
+                .any(|argument| argument.starts_with("/tmp/"))
+        }));
+    }
+
+    #[test]
     fn resolves_only_enabled_shell_or_safe_builtin_actions() {
         assert!(
             resolve_action_command(
@@ -2164,6 +2310,26 @@ mod tests {
         assert!(
             validate_sync_payload(&json!({"profile": "streaming", "keys": vec![sound_key; 15]}))
                 .is_ok()
+        );
+        let screenshot_key = json!({
+            "id": "screenshot-area",
+            "screenshotClipboard": true
+        });
+        assert!(
+            validate_sync_payload(
+                &json!({"profile": "streaming", "keys": vec![screenshot_key; 15]})
+            )
+            .is_ok()
+        );
+        let invalid_screenshot_key = json!({
+            "id": "screenshot-window",
+            "screenshotClipboard": "yes"
+        });
+        assert!(
+            validate_sync_payload(
+                &json!({"profile": "streaming", "keys": vec![invalid_screenshot_key; 15]})
+            )
+            .is_err()
         );
         let invalid_waveform = json!({
             "id": "sound",

@@ -53,7 +53,8 @@ const backend = {
         soundDuration: Number(sound?.duration) || null,
         soundWaveform: Array.isArray(sound?.waveform) ? sound.waveform : null,
         soundPressBehavior: action?.soundPressBehavior || "stop",
-        soundLoop: action?.soundLoop === true
+        soundLoop: action?.soundLoop === true,
+        screenshotClipboard: action?.screenshotClipboard === true
       }
     });
   },
@@ -82,6 +83,9 @@ const icons = {
   web: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><path d="M3 12h18M12 3c2.4 2.5 3.6 5.5 3.6 9s-1.2 6.5-3.6 9c-2.4-2.5-3.6-5.5-3.6-9S9.6 5.5 12 3Z"></path></svg>',
   music: '<svg viewBox="0 0 24 24"><path d="M9 18V5l10-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="16" cy="16" r="3"></circle></svg>',
   sound: '<svg viewBox="0 0 24 24"><path d="M4 13v-2M8 16V8M12 19V5M16 16V8M20 13v-2"></path></svg>',
+  screenshotFull: '<svg viewBox="0 0 24 24"><path d="M8 3H4a1 1 0 0 0-1 1v4M16 3h4a1 1 0 0 1 1 1v4M8 21H4a1 1 0 0 1-1-1v-4M16 21h4a1 1 0 0 0 1-1v-4"></path><rect x="7" y="7" width="10" height="10" rx="2"></rect><circle cx="12" cy="12" r="2.4"></circle></svg>',
+  screenshotArea: '<svg viewBox="0 0 24 24"><path d="M8 3H4a1 1 0 0 0-1 1v4M16 3h4a1 1 0 0 1 1 1v4M8 21H4a1 1 0 0 1-1-1v-4M16 21h4a1 1 0 0 0 1-1v-4"></path><path stroke-dasharray="2 2" d="M8 8h8v8H8z"></path></svg>',
+  screenshotWindow: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="15" rx="2"></rect><path d="M3 9h18M7 7h.01M10 7h.01"></path><path d="M8 12h8v5H8z"></path></svg>',
   sun: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19"></path></svg>',
   lock: '<svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path></svg>',
   layers: '<svg viewBox="0 0 24 24"><path d="m4 9 8-5 8 5-8 5-8-5Z"></path><path d="m4 14 8 5 8-5"></path></svg>',
@@ -98,6 +102,9 @@ const actionCatalog = [
   { id: "hotkey", name: "Keyboard Shortcut", subtitle: "System", description: "Ctrl + Shift + M", icon: "keyboard", color: "#e8ff58", category: "system", group: "Desktop" },
   { id: "command", name: "Run Command", subtitle: "Shell", description: "Execute shell command", icon: "terminal", color: "#ff9f1c", category: "system", group: "Desktop" },
   { id: "folder", name: "Open Folder", subtitle: "Files", description: "Open a local folder", icon: "folder", color: "#37b7ff", category: "system", group: "Desktop" },
+  { id: "screenshot-full", name: "Full Screen", subtitle: "Screenshot", description: "Save full screen to Pictures/Screenshots", screenshotClipboard: false, icon: "screenshotFull", color: "#e8ff58", category: "system", group: "Capture" },
+  { id: "screenshot-area", name: "Screen Area", subtitle: "Screenshot", description: "Save selected area to Pictures/Screenshots", screenshotClipboard: false, icon: "screenshotArea", color: "#37b7ff", category: "system", group: "Capture" },
+  { id: "screenshot-window", name: "Active Window", subtitle: "Screenshot", description: "Save active window to Pictures/Screenshots", screenshotClipboard: false, icon: "screenshotWindow", color: "#a78bfa", category: "system", group: "Capture" },
   { id: "website", name: "Open Website", subtitle: "Browser", description: "Open URL", icon: "web", color: "#a78bfa", category: "system", group: "Navigation" },
   { id: "sound", name: "Play Sound", subtitle: "Local audio", description: "Choose a sound file", soundPressBehavior: "stop", soundLoop: false, icon: "sound", color: "#37b7ff", category: "system", group: "Navigation" },
   { id: "music", name: "Play / Pause", subtitle: "Media", description: "System media control", icon: "music", color: "#38d996", category: "system", group: "Navigation" },
@@ -117,7 +124,7 @@ const layouts = {
   ],
   desktop: [
     ["launch", "TERMINAL", "#38d996"], ["launch", "FILES", "#37b7ff"], ["launch", "MAIL", "#ef476f"], ["launch", "BROWSER", "#ff9f1c"], ["lock", "LOCK", "#e8ff58"],
-    ["website", "CALENDAR", "#a78bfa"], ["music", "MUSIC", "#38d996"], ["volume", "VOLUME", "#37b7ff"], ["hotkey", "SCREENSHOT", "#e8ff58"], ["command", "UPDATES", "#ff9f1c"],
+    ["website", "CALENDAR", "#a78bfa"], ["music", "MUSIC", "#38d996"], ["volume", "VOLUME", "#37b7ff"], ["screenshot-full", "SCREENSHOT", "#e8ff58"], ["command", "UPDATES", "#ff9f1c"],
     null, null, null, null, null
   ]
 };
@@ -414,6 +421,23 @@ function formatFileSize(bytes) {
   return `${(size / 1_000_000).toFixed(1)} MB`;
 }
 
+const screenshotActionIds = new Set([
+  "screenshot-full",
+  "screenshot-area",
+  "screenshot-window"
+]);
+
+function screenshotDescription(actionId, clipboard) {
+  const subject = {
+    "screenshot-full": "full screen",
+    "screenshot-area": "selected area",
+    "screenshot-window": "active window"
+  }[actionId] || "screenshot";
+  return clipboard
+    ? `Copy ${subject} to clipboard`
+    : `Save ${subject} to Pictures/Screenshots`;
+}
+
 function soundLabelFromFilename(filename) {
   const name = String(filename || "")
     .trim()
@@ -694,8 +718,17 @@ function updateInspector() {
   const actionValue = document.querySelector("#actionValue");
   const targetLabel = document.querySelector("#targetLabel");
   const isSoundAction = key?.id === "sound";
-  document.querySelector("#standardActionTarget").hidden = isSoundAction;
+  const isScreenshotAction = screenshotActionIds.has(key?.id);
+  document.querySelector("#standardActionTarget").hidden =
+    isSoundAction || isScreenshotAction;
   document.querySelector("#soundPicker").hidden = !isSoundAction;
+  document.querySelector("#screenshotSettings").hidden = !isScreenshotAction;
+  const screenshotClipboardToggle = document.querySelector("#screenshotClipboardToggle");
+  screenshotClipboardToggle.checked = key?.screenshotClipboard === true;
+  document.querySelector("#screenshotDestinationDescription").textContent =
+    screenshotClipboardToggle.checked
+      ? "Place the captured image directly on the clipboard"
+      : "Save a timestamped PNG in Pictures/Screenshots";
   const targetSettings = {
     scene: ["Target scene", "", false],
     website: ["Website URL", "https://example.com", true],
@@ -1230,6 +1263,16 @@ document.querySelector("#soundRestartToggle").addEventListener("change", (event)
 
 document.querySelector("#soundLoopToggle").addEventListener("change", (event) => {
   updateKey({ soundLoop: event.target.checked });
+});
+
+document.querySelector("#screenshotClipboardToggle").addEventListener("change", (event) => {
+  const key = activeLayout()[selectedIndex];
+  if (!screenshotActionIds.has(key?.id)) return;
+  const screenshotClipboard = event.target.checked;
+  updateKey({
+    screenshotClipboard,
+    description: screenshotDescription(key.id, screenshotClipboard)
+  });
 });
 
 document.querySelector("#identifyButton").addEventListener("click", async (event) => {
