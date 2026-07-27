@@ -666,6 +666,14 @@ function renderProfileOptions() {
   select.replaceChildren(...options);
   select.value = currentProfile;
   document.querySelector("#layoutTitle").textContent = profileNames[currentProfile];
+  const profileStatus = document.querySelector("#deviceProfileStatus");
+  if (profileStatus) {
+    profileStatus.textContent = profileNames[currentProfile].toUpperCase();
+    profileStatus.parentElement.setAttribute(
+      "aria-label",
+      `Current profile: ${profileNames[currentProfile]}`
+    );
+  }
 
   const atProfileLimit = profileOrder.length >= maxProfiles;
   const addButton = document.querySelector("#addProfileButton");
@@ -1220,6 +1228,14 @@ function renderPageTabs() {
   }).join("");
   document.querySelector("#layoutNumber").textContent =
     `LAYOUT ${String(currentPage + 1).padStart(2, "0")}`;
+  const pageStatus = document.querySelector("#devicePageStatus");
+  if (pageStatus) {
+    pageStatus.textContent = String(currentPage + 1);
+    pageStatus.parentElement.setAttribute(
+      "aria-label",
+      `Current page: ${currentPage + 1}`
+    );
+  }
   const deleteButton = document.querySelector('[data-page-action="delete"]');
   deleteButton.disabled = pages.length <= 1;
   deleteButton.setAttribute(
