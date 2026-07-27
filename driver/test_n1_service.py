@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from driver import n1_service
@@ -19,6 +21,13 @@ class FakeDevice:
 
     def refresh(self):
         self.calls.append(("refresh",))
+
+    def clear_key_gif(self, key):
+        self.calls.append(("clear_key_gif", key))
+
+    def set_key_image(self, key, path):
+        self.calls.append(("set_key_image", key, path))
+        return 0
 
 
 class BrightnessTests(unittest.TestCase):
@@ -96,6 +105,20 @@ class SoundDisplayTests(unittest.TestCase):
             n1_service.sound_peaks(self.key),
             list(n1_service.FALLBACK_WAVEFORM),
         )
+
+    def test_configured_sound_waveform_overrides_custom_icon(self):
+        self.key["visuals"] = {
+            "primary": {"path": "/missing/custom-icon.png", "name": "Custom"}
+        }
+        device = FakeDevice()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            animated = n1_service.apply_key_visual(
+                device, 3, self.key, Path(temp_dir)
+            )
+
+        self.assertFalse(animated)
+        self.assertEqual(device.calls[0], ("clear_key_gif", 3))
+        self.assertEqual(device.calls[1][0:2], ("set_key_image", 3))
 
 
 if __name__ == "__main__":

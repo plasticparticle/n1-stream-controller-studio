@@ -306,7 +306,10 @@ def apply_key_visual(
     temp_path: Path,
     secondary: bool = False,
 ) -> bool:
-    visual = visual_for_key(key, secondary)
+    is_configured_sound = (
+        key.get("id") == "sound" and isinstance(key.get("sound"), dict)
+    )
+    visual = None if is_configured_sound else visual_for_key(key, secondary)
     device.clear_key_gif(index)
 
     if visual:

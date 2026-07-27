@@ -17,6 +17,9 @@ const backend = {
   sync(payload) {
     return this.invoke("sync_deck", { payload });
   },
+  syncKeyVisual(key, action) {
+    return this.invoke("sync_key_visual", { key, action });
+  },
   storeAsset(payload) {
     return this.invoke("store_asset", { payload });
   },
@@ -378,10 +381,10 @@ function soundWaveformMarkup(sound, playback) {
 
 function keyScreenMarkup(key, secondary = false, playback = null) {
   if (!key) return '<div class="key-screen empty"><span class="empty-plus">+</span></div>';
-  const visual = selectedVisual(key, secondary);
+  const isSound = key.id === "sound" && Boolean(key.sound);
+  const visual = isSound ? null : selectedVisual(key, secondary);
   const previewUrl = assetPreviewUrl(visual);
   const color = safeColor(key.color);
-  const isSound = key.id === "sound" && Boolean(key.sound);
   const screenClass = [
     "key-screen",
     previewUrl ? "has-custom-icon" : "",
@@ -452,6 +455,17 @@ async function analyzeStoredSound(sound) {
   const response = await fetch(source);
   if (!response.ok) throw new Error(`Unable to read ${sound.name || "sound"}`);
   return analyzeSoundBuffer(await response.arrayBuffer());
+}
+
+async function syncKeyVisualImmediately(target, key) {
+  const isCurrentPage =
+    target.profile === currentProfile && target.page === activePageIndex();
+  if (!isCurrentPage || !hardwareTransportReady) return;
+  try {
+    await backend.syncKeyVisual(target.index + 1, structuredClone(key));
+  } catch {
+    // The queued full sync below remains the source of truth and retries failures.
+  }
 }
 
 function renderPageTabs() {
@@ -644,6 +658,16 @@ function updateInspector() {
   keyTitle.value = key?.title || "";
   document.querySelector("#titleCount").textContent = `${keyTitle.value.length}/18`;
   miniKey.innerHTML = keyScreenMarkup(key, getRuntimeVisualState(selectedIndex), playback);
+  const canPreviewSound = key?.id === "sound" && Boolean(key.sound?.id);
+  miniKey.classList.toggle("sound-previewable", canPreviewSound);
+  miniKey.tabIndex = canPreviewSound ? 0 : -1;
+  miniKey.setAttribute("role", canPreviewSound ? "button" : "img");
+  miniKey.setAttribute(
+    "aria-label",
+    canPreviewSound
+      ? `${playback ? "Stop" : "Preview"} ${key.sound.name || key.title}`
+      : "Selected key preview"
+  );
 
   const name = key?.name || "Empty key";
   const subtitle = key?.subtitle || "Choose an action";
@@ -755,18 +779,40 @@ function updateHistoryButtons() {
   redoButton.disabled = future.length === 0;
 }
 
+async function previewSoundKey(index) {
+  const action = activeLayout()?.[index];
+  if (action?.id !== "sound" || !action.sound?.id) return;
+  keyGrid.children[index]?.animate(
+    [
+      { transform: "scale(1)" },
+      { transform: "scale(.93)", filter: "brightness(1.45)" },
+      { transform: "scale(1)" }
+    ],
+    { duration: 260, easing: "ease-out" }
+  );
+  try {
+    const result = await backend.testAction(index + 1, action);
+    if (!result.ok) throw new Error(result.error || "Sound preview failed");
+  } catch (error) {
+    showToast("Sound could not play", error.message);
+  }
+}
+
 function handleKeyClick(index) {
+  let duplicated = false;
   if (duplicateSource !== null && duplicateSource !== index) {
     snapshot();
     activeLayout()[index] = activeLayout()[duplicateSource]
       ? structuredClone(activeLayout()[duplicateSource])
       : null;
     duplicateSource = null;
+    duplicated = true;
     requestDeviceSync();
     showToast("Key duplicated", `Copied the action to key ${String(index + 1).padStart(2, "0")}.`);
   }
   selectedIndex = index;
   renderKeys();
+  if (!duplicated) void previewSoundKey(index);
 }
 
 function assignAction(index, actionId) {
@@ -1109,11 +1155,17 @@ document.querySelector("#soundUpload").addEventListener("change", async (event) 
   const card = document.querySelector("#soundFileCard");
   card.classList.add("uploading");
   try {
+    let analysis = null;
+    let analysisSettled = false;
+    const analysisPromise = analyzeSoundFile(file)
+      .catch(() => null)
+      .then((result) => {
+        analysis = result;
+        analysisSettled = true;
+        return result;
+      });
     const dataUrl = await readFileAsDataUrl(file);
-    const [result, analysis] = await Promise.all([
-      backend.storeSound({ name: file.name, dataUrl }),
-      analyzeSoundFile(file).catch(() => null)
-    ]);
+    const result = await backend.storeSound({ name: file.name, dataUrl });
     if (!result.ok) throw new Error(result.error || "Sound upload failed");
 
     const key = pageLayouts[target.profile]?.[target.page]?.[target.index];
@@ -1121,12 +1173,22 @@ document.querySelector("#soundUpload").addEventListener("change", async (event) 
     const isCurrentPage =
       target.profile === currentProfile && target.page === activePageIndex();
     if (isCurrentPage) snapshot();
+    const analysisApplied = Boolean(analysis);
     key.sound = { ...result.sound, ...(analysis || {}) };
     key.target = result.sound.name;
     key.description = result.sound.name;
     if (isCurrentPage) renderKeys();
+    await syncKeyVisualImmediately(target, key);
     requestDeviceSync();
     showToast("Sound ready", `${result.sound.name} will play when the key is pressed.`);
+
+    if (!analysisSettled) analysis = await analysisPromise;
+    if (!analysisApplied && analysis && key.sound?.id === result.sound.id) {
+      Object.assign(key.sound, analysis);
+      if (isCurrentPage) renderKeys();
+      await syncKeyVisualImmediately(target, key);
+      requestDeviceSync();
+    }
   } catch (error) {
     showToast("Sound upload failed", error.message);
   } finally {
@@ -1225,6 +1287,15 @@ document.querySelector("#testActionButton").addEventListener("click", async () =
   } catch (error) {
     showToast("Action could not run", error.message);
   }
+});
+
+miniKey.addEventListener("click", () => {
+  void previewSoundKey(selectedIndex);
+});
+miniKey.addEventListener("keydown", (event) => {
+  if (!["Enter", " "].includes(event.key)) return;
+  event.preventDefault();
+  void previewSoundKey(selectedIndex);
 });
 
 document.querySelector("#profileSelect").addEventListener("change", (event) => {

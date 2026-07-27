@@ -1099,6 +1099,21 @@ kbd {
   background: #090c0e;
 }
 
+.mini-key.sound-previewable {
+  cursor: pointer;
+  transition: transform .16s ease, filter .16s ease;
+}
+
+.mini-key.sound-previewable:hover {
+  filter: brightness(1.14);
+  transform: translateY(-1px);
+}
+
+.mini-key.sound-previewable:focus-visible {
+  outline: 2px solid var(--acid);
+  outline-offset: 3px;
+}
+
 .key-screen.empty::before {
   background: radial-gradient(circle, rgba(255,255,255,.035), transparent 60%);
 }

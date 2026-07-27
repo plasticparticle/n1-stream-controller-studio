@@ -499,6 +499,30 @@ impl AppCore {
         }))
     }
 
+    fn sync_key_visual(self: &Arc<Self>, key: i64, action: Value) -> Result<Value, String> {
+        if !(1..=15).contains(&key) || !action.is_object() {
+            return Err("Key visual updates require a configured key between 1 and 15".into());
+        }
+        let mut keys = vec![Value::Null; 15];
+        keys[(key - 1) as usize] = action.clone();
+        validate_sync_payload(&json!({
+            "profile": "visual-preview",
+            "keys": keys
+        }))?;
+        let config = self.materialize_key(&action)?;
+        let result = self.driver.request(
+            self.clone(),
+            "key_state",
+            json!({"key": key, "secondary": false, "config": config}),
+            Duration::from_secs(30),
+        )?;
+        Ok(json!({
+            "ok": true,
+            "key": key,
+            "animated": result.get("animated").and_then(Value::as_bool).unwrap_or(false)
+        }))
+    }
+
     fn set_brightness(self: &Arc<Self>, brightness: i64) -> Result<Value, String> {
         let brightness = brightness.clamp(0, 100);
         self.driver.request(
@@ -1834,6 +1858,18 @@ async fn sync_deck(state: State<'_, AppState>, payload: Value) -> Result<Value, 
 }
 
 #[tauri::command]
+async fn sync_key_visual(
+    state: State<'_, AppState>,
+    key: i64,
+    action: Value,
+) -> Result<Value, String> {
+    let core = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || core.sync_key_visual(key, action))
+        .await
+        .map_err(error_text)?
+}
+
+#[tauri::command]
 fn store_asset(state: State<'_, AppState>, payload: Value) -> Result<Value, String> {
     state.0.store_asset(payload)
 }
@@ -1943,6 +1979,7 @@ pub fn run() {
             close_window,
             start_window_drag,
             sync_deck,
+            sync_key_visual,
             store_asset,
             store_sound,
             set_brightness,
