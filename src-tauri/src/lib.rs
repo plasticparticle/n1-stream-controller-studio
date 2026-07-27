@@ -1648,7 +1648,7 @@ fn valid_hardware_input(message: &Value) -> bool {
             message
                 .get("key")
                 .and_then(Value::as_u64)
-                .is_some_and(|key| (1..=15).contains(&key))
+                .is_some_and(|key| (1..=17).contains(&key))
                 && message
                     .get("state")
                     .and_then(Value::as_i64)
@@ -2184,6 +2184,9 @@ mod tests {
     fn validates_hardware_event_shape() {
         assert!(valid_hardware_input(
             &json!({"type": "button", "key": 1, "state": 1})
+        ));
+        assert!(valid_hardware_input(
+            &json!({"type": "button", "key": 17, "state": 1})
         ));
         assert!(!valid_hardware_input(
             &json!({"type": "button", "key": 99, "state": 1})
