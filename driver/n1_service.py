@@ -107,6 +107,73 @@ def draw_symbol(draw: ImageDraw.ImageDraw, icon: str, color: tuple[int, int, int
         draw.ellipse((31, 23, 34, 26), fill=bright)
         draw.ellipse((37, 23, 40, 26), fill=bright)
         draw.rectangle((34, 35, 62, 49), outline=bright, width=2)
+    elif icon == "codexAgent":
+        points = ((48, 18), (62, 25), (68, 39), (61, 53), (46, 57), (33, 49), (28, 35), (36, 22))
+        draw.line((*points, points[0]), fill=bright, width=3, joint="curve")
+        draw.ellipse((38, 28, 58, 48), outline=bright, width=3)
+        draw.line((48, 18, 38, 28, 33, 49, 46, 57), fill=bright, width=2)
+        draw.line((62, 25, 58, 48, 61, 53), fill=bright, width=2)
+    elif icon == "claudeAgent":
+        for endpoint in ((48, 17), (48, 57), (28, 37), (68, 37), (33, 22), (63, 52), (63, 22), (33, 52)):
+            draw.line((48, 37, *endpoint), fill=bright, width=3)
+        draw.ellipse((42, 31, 54, 43), fill=bright)
+    elif icon == "geminiAgent":
+        draw.polygon(((48, 16), (54, 31), (70, 37), (54, 43), (48, 58), (42, 43), (26, 37), (42, 31)), outline=bright)
+        draw.line((48, 16, 48, 58), fill=bright, width=3)
+        draw.line((26, 37, 70, 37), fill=bright, width=3)
+    elif icon == "resume":
+        draw.arc((28, 18, 68, 58), 35, 315, fill=bright, width=4)
+        draw.polygon(((27, 24), (38, 22), (34, 33)), fill=bright)
+        draw.line((48, 27, 48, 38, 57, 43), fill=bright, width=3)
+    elif icon == "plan":
+        for y in (25, 37, 49):
+            draw.line((31, y, 35, y + 4, 41, y - 5), fill=bright, width=3)
+            draw.line((46, y, 66, y), fill=bright, width=3)
+    elif icon == "build":
+        draw.polygon(((31, 48), (55, 24), (64, 33), (40, 57), (29, 58)), outline=bright)
+        draw.line((51, 28, 60, 37), fill=bright, width=3)
+        draw.line((31, 20, 43, 20), fill=bright, width=3)
+        draw.line((37, 14, 37, 26), fill=bright, width=3)
+    elif icon == "bug":
+        draw.rounded_rectangle((36, 24, 60, 55), radius=10, outline=bright, width=3)
+        draw.line((40, 24, 40, 19, 45, 16), fill=bright, width=2)
+        draw.line((56, 24, 56, 19, 51, 16), fill=bright, width=2)
+        draw.line((27, 31, 36, 34), fill=bright, width=3)
+        draw.line((60, 34, 69, 31), fill=bright, width=3)
+        draw.line((27, 48, 36, 45), fill=bright, width=3)
+        draw.line((60, 45, 69, 48), fill=bright, width=3)
+        draw.line((48, 30, 48, 53), fill=bright, width=2)
+    elif icon == "test":
+        draw.line((40, 17, 56, 17), fill=bright, width=3)
+        draw.line((43, 17, 43, 29, 31, 52), fill=bright, width=3)
+        draw.line((53, 17, 53, 29, 65, 52), fill=bright, width=3)
+        draw.arc((30, 43, 66, 60), 0, 180, fill=bright, width=3)
+        draw.line((35, 44, 61, 44), fill=bright, width=2)
+    elif icon == "review":
+        draw.rectangle((29, 18, 55, 56), outline=bright, width=3)
+        draw.line((35, 28, 49, 28), fill=bright, width=2)
+        draw.line((35, 36, 47, 36), fill=bright, width=2)
+        draw.ellipse((48, 36, 66, 54), outline=bright, width=3)
+        draw.line((62, 51, 69, 58), fill=bright, width=3)
+    elif icon == "refactor":
+        draw.line((29, 27, 63, 27), fill=bright, width=3)
+        draw.polygon(((63, 21), (70, 27), (63, 33)), fill=bright)
+        draw.line((67, 48, 33, 48), fill=bright, width=3)
+        draw.polygon(((33, 42), (26, 48), (33, 54)), fill=bright)
+    elif icon == "explain":
+        draw.rounded_rectangle((27, 19, 69, 50), radius=6, outline=bright, width=3)
+        draw.polygon(((34, 49), (34, 58), (46, 50)), fill=bright)
+        draw.line((35, 29, 61, 29), fill=bright, width=2)
+        draw.line((35, 38, 54, 38), fill=bright, width=2)
+    elif icon == "docs":
+        draw.polygon(((32, 17), (56, 17), (66, 27), (66, 57), (32, 57)), outline=bright)
+        draw.line((56, 17, 56, 28, 66, 28), fill=bright, width=3)
+        draw.line((39, 37, 59, 37), fill=bright, width=2)
+        draw.line((39, 45, 59, 45), fill=bright, width=2)
+    elif icon == "ship":
+        draw.polygon(((48, 15), (66, 43), (48, 59), (30, 43)), outline=bright)
+        draw.line((48, 15, 48, 59), fill=bright, width=3)
+        draw.line((30, 43, 66, 43), fill=bright, width=3)
     elif icon in {"record", "mic"}:
         draw.ellipse((34, 23, 62, 51), outline=bright, width=4)
         draw.ellipse((43, 32, 53, 42), fill=bright)
@@ -230,6 +297,10 @@ def render_key(key: dict[str, Any]) -> Image.Image:
 
     draw.rounded_rectangle((2, 2, 93, 93), radius=10, outline=(48, 53, 57), width=2)
     draw_symbol(draw, str(key.get("icon", "app")), base)
+    if key.get("agentMonitor"):
+        active = key.get("agentActive") is True
+        dot = tuple(min(255, channel + 85) for channel in base) if active else (57, 66, 70)
+        draw.ellipse((77, 8, 87, 18), fill=dot, outline=(205, 214, 208), width=1)
     title, font = fit_text(draw, str(key.get("title", "")), 82)
     text_box = draw.textbbox((0, 0), title, font=font)
     text_width = text_box[2] - text_box[0]

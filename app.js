@@ -54,7 +54,10 @@ const backend = {
         soundWaveform: Array.isArray(sound?.waveform) ? sound.waveform : null,
         soundPressBehavior: action?.soundPressBehavior || "stop",
         soundLoop: action?.soundLoop === true,
-        screenshotClipboard: action?.screenshotClipboard === true
+        screenshotClipboard: action?.screenshotClipboard === true,
+        agent: action?.agent || null,
+        agentWorkflow: action?.agentWorkflow || null,
+        agentSlot: Number(action?.agentSlot) || null
       }
     });
   },
@@ -77,6 +80,19 @@ const icons = {
   record: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"></circle><circle cx="12" cy="12" r="3"></circle></svg>',
   message: '<svg viewBox="0 0 24 24"><path d="M20 15a3 3 0 0 1-3 3H8l-5 3V7a3 3 0 0 1 3-3h11a3 3 0 0 1 3 3v8Z"></path><path d="M8 9h8M8 13h5"></path></svg>',
   app: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"></rect><path d="M9 9h6v6H9z"></path></svg>',
+  codexAgent: '<svg viewBox="0 0 24 24"><path d="m12 3 3 1.7 3.4-.1.1 3.4 1.7 3-1.7 3-.1 3.4-3.4-.1-3 1.7-3-1.7-3.4.1-.1-3.4-1.7-3 1.7-3 .1-3.4 3.4.1L12 3Z"></path><circle cx="12" cy="12" r="3.2"></circle></svg>',
+  claudeAgent: '<svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6 5.6 18.4"></path><circle cx="12" cy="12" r="2.5"></circle></svg>',
+  geminiAgent: '<svg viewBox="0 0 24 24"><path d="M12 2c.8 6.3 3.7 9.2 10 10-6.3.8-9.2 3.7-10 10-.8-6.3-3.7-9.2-10-10 6.3-.8 9.2-3.7 10-10Z"></path></svg>',
+  resume: '<svg viewBox="0 0 24 24"><path d="M4 8v5h5"></path><path d="M5.5 12a7 7 0 1 0 2-5"></path><path d="M12 8v4l3 2"></path></svg>',
+  plan: '<svg viewBox="0 0 24 24"><path d="M9 5h11M9 12h11M9 19h11"></path><path d="m3.5 5 1.2 1.2L7 3.8M3.5 12l1.2 1.2L7 10.8M3.5 19l1.2 1.2L7 17.8"></path></svg>',
+  build: '<svg viewBox="0 0 24 24"><path d="m14 5 5 5-9 9H5v-5l9-9Z"></path><path d="m12 7 5 5M4 4h6M7 1v6"></path></svg>',
+  bug: '<svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="12" rx="5"></rect><path d="M9 7V5a3 3 0 0 1 6 0v2M4 10h3M17 10h3M4 15h3M17 15h3M9 11h6M12 11v8"></path></svg>',
+  test: '<svg viewBox="0 0 24 24"><path d="M9 3h6M10 3v5l-5 9a3 3 0 0 0 2.6 4h8.8a3 3 0 0 0 2.6-4l-5-9V3"></path><path d="M7.5 16h9"></path></svg>',
+  review: '<svg viewBox="0 0 24 24"><path d="M4 5h11v14H4zM8 9h3M8 13h3"></path><circle cx="17" cy="16" r="4"></circle><path d="m20 19 2 2"></path></svg>',
+  refactor: '<svg viewBox="0 0 24 24"><path d="M7 7h10M14 4l3 3-3 3M17 17H7M10 14l-3 3 3 3"></path></svg>',
+  explain: '<svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4V5Z"></path><path d="M8 9h8M8 13h5"></path></svg>',
+  docs: '<svg viewBox="0 0 24 24"><path d="M5 3h10l4 4v14H5V3Z"></path><path d="M14 3v5h5M8 12h8M8 16h8"></path></svg>',
+  ship: '<svg viewBox="0 0 24 24"><path d="M4 14 12 3l8 11-8 7-8-7Z"></path><path d="M8 14h8M12 3v18"></path></svg>',
   keyboard: '<svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"></rect><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10"></path></svg>',
   terminal: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="m7 9 3 3-3 3M13 15h4"></path></svg>',
   folder: '<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"></path></svg>',
@@ -98,6 +114,7 @@ const actionCatalog = [
   { id: "volume", name: "Mute Speakers", subtitle: "Audio control", description: "Default speakers", icon: "volume", color: "#38d996", category: "stream", group: "Streaming" },
   { id: "record", name: "Start Recording", subtitle: "OBS Studio", description: "Toggle recording", icon: "record", color: "#ef476f", category: "stream", group: "Streaming" },
   { id: "chat", name: "Show Chat", subtitle: "Browser dock", description: "Open stream chat", icon: "message", color: "#a78bfa", category: "stream", group: "Streaming" },
+  { id: "ai-agent", name: "New Codex Agent", subtitle: "AI coding CLI", description: "Open Codex in a new terminal window", agent: "codex", agentWorkflow: "new", icon: "codexAgent", color: "#37b7ff", category: "system", group: "AI Coding" },
   { id: "launch", name: "Launch App", subtitle: "Applications", description: "Choose an application", icon: "app", color: "#38d996", category: "system", group: "Desktop" },
   { id: "hotkey", name: "Keyboard Shortcut", subtitle: "System", description: "Ctrl + Shift + M", icon: "keyboard", color: "#e8ff58", category: "system", group: "Desktop" },
   { id: "command", name: "Run Command", subtitle: "Shell", description: "Execute shell command", icon: "terminal", color: "#ff9f1c", category: "system", group: "Desktop" },
@@ -110,6 +127,57 @@ const actionCatalog = [
   { id: "music", name: "Play / Pause", subtitle: "Media", description: "System media control", icon: "music", color: "#38d996", category: "system", group: "Navigation" },
   { id: "lock", name: "Lock Screen", subtitle: "Linux", description: "Lock this session", icon: "lock", color: "#e8ff58", category: "system", group: "Navigation" }
 ];
+
+const agentProfileIds = ["codex-cli", "claude-cli", "gemini-cli"];
+const agentWorkflowDefinitions = [
+  ["resume", "RESUME", "resume", "#38d996", "Continue the latest session"],
+  ["plan", "PLAN", "plan", "#e8ff58", "Plan the next change before editing"],
+  ["build", "BUILD", "build", "#37b7ff", "Build a requested feature"],
+  ["debug", "DEBUG", "bug", "#ef476f", "Diagnose and fix the current issue"],
+  ["test", "TEST", "test", "#a78bfa", "Run tests and repair failures"],
+  ["review", "REVIEW", "review", "#ff9f1c", "Review the current working tree"],
+  ["refactor", "REFACTOR", "refactor", "#38d996", "Refactor without changing behavior"],
+  ["explain", "EXPLAIN", "explain", "#37b7ff", "Explain the current codebase"],
+  ["docs", "DOCS", "docs", "#a78bfa", "Improve project documentation"],
+  ["ship", "SHIP CHECK", "ship", "#e8ff58", "Run final checks and prepare a handoff"]
+];
+
+function agentProfileLayout(agent, label, icon, activeColor) {
+  const idleColor = "#343c40";
+  const slots = Array.from({ length: 5 }, (_, index) => [
+    "ai-agent",
+    `${label} ${index + 1}`,
+    idleColor,
+    {
+      name: `New ${label} Agent`,
+      subtitle: `${label} CLI · Session slot ${index + 1}`,
+      description: `Open ${label} in a new terminal window`,
+      agent,
+      agentWorkflow: "new",
+      agentMonitor: agent,
+      agentSlot: index + 1,
+      activeColor,
+      idleColor,
+      icon
+    }
+  ]);
+  const workflows = agentWorkflowDefinitions.map(
+    ([workflow, title, workflowIcon, color, description]) => [
+      "ai-agent",
+      title,
+      color,
+      {
+        name: `${label} ${title}`,
+        subtitle: `${label} CLI · ${workflow}`,
+        description,
+        agent,
+        agentWorkflow: workflow,
+        icon: workflowIcon
+      }
+    ]
+  );
+  return [...slots, ...workflows];
+}
 
 const layouts = {
   streaming: [
@@ -126,16 +194,23 @@ const layouts = {
     ["launch", "TERMINAL", "#38d996"], ["launch", "FILES", "#37b7ff"], ["launch", "MAIL", "#ef476f"], ["launch", "BROWSER", "#ff9f1c"], ["lock", "LOCK", "#e8ff58"],
     ["website", "CALENDAR", "#a78bfa"], ["music", "MUSIC", "#38d996"], ["volume", "VOLUME", "#37b7ff"], ["screenshot-full", "SCREENSHOT", "#e8ff58"], ["command", "UPDATES", "#ff9f1c"],
     null, null, null, null, null
-  ]
+  ],
+  "codex-cli": agentProfileLayout("codex", "CODEX", "codexAgent", "#37b7ff"),
+  "claude-cli": agentProfileLayout("claude", "CLAUDE", "claudeAgent", "#ff9f1c"),
+  "gemini-cli": agentProfileLayout("gemini", "GEMINI", "geminiAgent", "#a78bfa")
 };
 
 const profileNames = {
   streaming: "Live Stream",
   editing: "Video Edit",
-  desktop: "Daily Desk"
+  desktop: "Daily Desk",
+  "codex-cli": "Codex CLI",
+  "claude-cli": "Claude CLI",
+  "gemini-cli": "Gemini CLI"
 };
 
-const maxProfiles = 16;
+const defaultProfilesVersion = 1;
+const maxProfiles = 24;
 const maxProfileNameLength = 40;
 let currentProfile = "streaming";
 let profileOrder = [];
@@ -160,9 +235,19 @@ let pendingSoundTarget = null;
 let profileDialogMode = "create";
 let profileDialogSource = null;
 let profileDialogTrigger = null;
+let agentVisualSyncTimer = null;
+let agentVisualSyncQueued = false;
+let agentVisualSyncForce = false;
+let agentVisualSyncInProgress = false;
 const runtimeVisualStates = new Map();
 const soundPlaybackStates = new Map();
 const soundPlaybackByKey = new Map();
+const agentHardwareStates = new Map();
+const agentStatuses = new Map([
+  ["codex", { count: 0, slots: new Set() }],
+  ["claude", { count: 0, slots: new Set() }],
+  ["gemini", { count: 0, slots: new Set() }]
+]);
 
 const keyGrid = document.querySelector("#keyGrid");
 const actionGroups = document.querySelector("#actionGroups");
@@ -194,6 +279,7 @@ function iconMarkup(name) {
 function createKeyData(tuple) {
   if (!tuple) return null;
   const action = actionCatalog.find((item) => item.id === tuple[0]) || actionCatalog[0];
+  const overrides = tuple[3] && typeof tuple[3] === "object" ? tuple[3] : {};
   const sceneTargets = {
     STARTING: "Starting Soon",
     "MAIN CAM": "Main Camera",
@@ -204,7 +290,8 @@ function createKeyData(tuple) {
     ...action,
     title: tuple[1],
     color: tuple[2],
-    target: action.id === "scene" ? (sceneTargets[tuple[1]] || "Starting Soon") : action.description
+    target: action.id === "scene" ? (sceneTargets[tuple[1]] || "Starting Soon") : action.description,
+    ...overrides
   };
 }
 
@@ -218,6 +305,7 @@ const pageStorageKey = "n1-stream-controller-studio-pages";
 const pageLayouts = Object.create(null);
 const currentPageByProfile = Object.create(null);
 let restoredSavedLayouts = false;
+let restoredDefaultProfilesVersion = 0;
 
 function isValidProfileId(value) {
   const profileId = String(value || "");
@@ -248,6 +336,7 @@ try {
     ? JSON.parse(savedPageJson)
     : null;
   if (savedPageState?.profiles && typeof savedPageState.profiles === "object") {
+    restoredDefaultProfilesVersion = Number(savedPageState.defaultProfilesVersion) || 0;
     const savedIds = [
       ...(Array.isArray(savedPageState.order) ? savedPageState.order : []),
       ...Object.keys(savedPageState.profiles)
@@ -297,9 +386,20 @@ try {
   // A malformed local draft should never prevent the editor from loading.
 }
 
+if (profileOrder.length && restoredDefaultProfilesVersion < defaultProfilesVersion) {
+  agentProfileIds.forEach((profile) => {
+    if (pageLayouts[profile] || profileOrder.length >= maxProfiles) return;
+    pageLayouts[profile] = [structuredClone(layouts[profile])];
+    currentPageByProfile[profile] = 0;
+    profileOrder.push(profile);
+  });
+}
+
 if (!profileOrder.length) {
   Object.keys(layouts).forEach((profile) => {
-    pageLayouts[profile] = [layouts[profile], Array(15).fill(null)];
+    pageLayouts[profile] = agentProfileIds.includes(profile)
+      ? [layouts[profile]]
+      : [layouts[profile], Array(15).fill(null)];
     currentPageByProfile[profile] = 0;
     profileOrder.push(profile);
   });
@@ -322,7 +422,8 @@ function replaceActiveLayout(layout) {
 function persistPages() {
   try {
     localStorage.setItem(pageStorageKey, JSON.stringify({
-      version: 2,
+      version: 3,
+      defaultProfilesVersion,
       profile: currentProfile,
       current: currentPageByProfile,
       names: profileNames,
@@ -432,6 +533,9 @@ function clearProfileRuntimeState(profileId) {
   for (const stateKey of runtimeVisualStates.keys()) {
     if (stateKey.startsWith(prefix)) runtimeVisualStates.delete(stateKey);
   }
+  for (const stateKey of agentHardwareStates.keys()) {
+    if (stateKey.startsWith(prefix)) agentHardwareStates.delete(stateKey);
+  }
   for (const stateKey of soundPlaybackStates.keys()) {
     if (stateKey.startsWith(prefix)) soundPlaybackStates.delete(stateKey);
   }
@@ -500,6 +604,15 @@ function requestDeviceSync({ immediate = false, announce = false } = {}) {
   return Promise.resolve();
 }
 
+function autoSyncOnTransportReady(transportWasReady) {
+  if (transportWasReady || !hardwareTransportReady) return;
+  if (autoSyncQueued) {
+    void flushDeviceSync();
+    return;
+  }
+  void requestDeviceSync({ immediate: true });
+}
+
 function visualStateKey(profile, page, index) {
   return `${profile}:${page}:${index}`;
 }
@@ -565,23 +678,122 @@ function soundWaveformMarkup(sound, playback) {
   `;
 }
 
+function agentStatusFor(agent) {
+  return agentStatuses.get(agent) || { count: 0, slots: new Set() };
+}
+
+function agentKeyIsActive(key) {
+  if (!key?.agentMonitor) return false;
+  const status = agentStatusFor(key.agentMonitor);
+  const slot = Number(key.agentSlot);
+  return Number.isInteger(slot) && slot > 0
+    ? status.slots.has(slot)
+    : status.count > 0;
+}
+
+function agentVisualKey(key) {
+  if (!key?.agentMonitor) return key;
+  const active = agentKeyIsActive(key);
+  return {
+    ...key,
+    color: active
+      ? safeColor(key.activeColor, key.color)
+      : safeColor(key.idleColor, "#343c40"),
+    agentActive: active
+  };
+}
+
+function updateAgentStatuses(statuses) {
+  if (!statuses || typeof statuses !== "object") return;
+  let changed = false;
+  for (const agent of ["codex", "claude", "gemini"]) {
+    const next = statuses[agent] || {};
+    const count = Math.max(0, Number(next.count) || 0);
+    const slots = new Set(
+      (Array.isArray(next.slots) ? next.slots : [])
+        .map(Number)
+        .filter((slot) => Number.isInteger(slot) && slot >= 1 && slot <= 5)
+    );
+    const previous = agentStatusFor(agent);
+    const slotsChanged = slots.size !== previous.slots.size
+      || [...slots].some((slot) => !previous.slots.has(slot));
+    if (count !== previous.count || slotsChanged) changed = true;
+    agentStatuses.set(agent, { count, slots });
+  }
+  if (!changed) return;
+  renderKeys();
+  requestAgentVisualSync();
+}
+
+function requestAgentVisualSync({ force = false } = {}) {
+  agentVisualSyncQueued = true;
+  agentVisualSyncForce ||= force;
+  window.clearTimeout(agentVisualSyncTimer);
+  agentVisualSyncTimer = window.setTimeout(() => {
+    agentVisualSyncTimer = null;
+    void flushAgentVisualSync();
+  }, 160);
+}
+
+async function flushAgentVisualSync() {
+  if (
+    !agentVisualSyncQueued
+    || !hardwareTransportReady
+    || deckSyncInProgress
+    || agentVisualSyncInProgress
+  ) return;
+  const force = agentVisualSyncForce;
+  const syncProfile = currentProfile;
+  const syncPage = activePageIndex();
+  const monitoredKeys = activeLayout()
+    .map((key, index) => ({ key, index }))
+    .filter(({ key }) => Boolean(key?.agentMonitor));
+  agentVisualSyncQueued = false;
+  agentVisualSyncForce = false;
+  agentVisualSyncInProgress = true;
+  try {
+    for (const { key, index } of monitoredKeys) {
+      if (currentProfile !== syncProfile || activePageIndex() !== syncPage) break;
+      const visualKey = agentVisualKey(key);
+      const stateKey = visualStateKey(syncProfile, syncPage, index);
+      const state = `${visualKey.agentActive ? "on" : "off"}:${visualKey.color}`;
+      if (!force && agentHardwareStates.get(stateKey) === state) continue;
+      await backend.syncKeyVisual(index + 1, structuredClone(visualKey));
+      agentHardwareStates.set(stateKey, state);
+    }
+  } catch {
+    // A reconnect or the next full sync will restore the latest agent colors.
+  } finally {
+    agentVisualSyncInProgress = false;
+    if (agentVisualSyncQueued) requestAgentVisualSync({ force: agentVisualSyncForce });
+  }
+}
+
 function keyScreenMarkup(key, secondary = false, playback = null) {
   if (!key) return '<div class="key-screen empty"><span class="empty-plus">+</span></div>';
+  const visualKey = agentVisualKey(key);
   const isSound = key.id === "sound" && Boolean(key.sound);
   const visual = isSound ? null : selectedVisual(key, secondary);
   const previewUrl = assetPreviewUrl(visual);
-  const color = safeColor(key.color);
+  const color = safeColor(visualKey.color);
+  const isAgentMonitored = Boolean(key.agentMonitor);
+  const isAgentActive = isAgentMonitored && visualKey.agentActive;
   const screenClass = [
     "key-screen",
     previewUrl ? "has-custom-icon" : "",
     isSound ? "has-sound" : "",
-    playback ? "sound-playing" : ""
+    playback ? "sound-playing" : "",
+    isAgentMonitored ? "agent-monitored" : "",
+    isAgentMonitored ? (isAgentActive ? "agent-active" : "agent-idle") : ""
   ].filter(Boolean).join(" ");
   const soundMarkup = isSound ? soundWaveformMarkup(key.sound, playback) : "";
+  const agentMarkup = isAgentMonitored
+    ? `<span class="agent-state-dot" title="${isAgentActive ? "Agent running" : "Agent idle"}"></span>`
+    : "";
   if (previewUrl) {
-    return `<div class="${screenClass}" style="--key-color:${color}"><img src="${escapeHtml(previewUrl)}" alt="" draggable="false">${soundMarkup}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
+    return `<div class="${screenClass}" style="--key-color:${color}"><img src="${escapeHtml(previewUrl)}" alt="" draggable="false">${soundMarkup}${agentMarkup}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
   }
-  return `<div class="${screenClass}" style="--key-color:${color}">${isSound ? "" : iconMarkup(key.icon)}${soundMarkup}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
+  return `<div class="${screenClass}" style="--key-color:${color}">${isSound ? "" : iconMarkup(key.icon)}${soundMarkup}${agentMarkup}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
 }
 
 function escapeHtml(value) {
@@ -762,6 +974,9 @@ function deleteCurrentPage() {
   for (const stateKey of runtimeVisualStates.keys()) {
     if (stateKey.startsWith(`${currentProfile}:`)) runtimeVisualStates.delete(stateKey);
   }
+  for (const stateKey of agentHardwareStates.keys()) {
+    if (stateKey.startsWith(`${currentProfile}:`)) agentHardwareStates.delete(stateKey);
+  }
 
   const nextPage = Math.min(pageIndex, pages.length - 1);
   switchPage(nextPage, false);
@@ -783,7 +998,7 @@ function renderKeys() {
     button.setAttribute(
       "aria-label",
       key
-        ? `Key ${index + 1}: ${key.title}${playback ? ", sound playing" : ""}`
+        ? `Key ${index + 1}: ${key.title}${playback ? ", sound playing" : ""}${key.agentMonitor ? `, agent ${agentKeyIsActive(key) ? "running" : "idle"}` : ""}`
         : `Key ${index + 1}: empty`
     );
     button.innerHTML = keyScreenMarkup(key, getRuntimeVisualState(index), playback);
@@ -898,10 +1113,42 @@ function updateInspector() {
   const targetLabel = document.querySelector("#targetLabel");
   const isSoundAction = key?.id === "sound";
   const isScreenshotAction = screenshotActionIds.has(key?.id);
+  const isAgentAction = key?.id === "ai-agent";
   document.querySelector("#standardActionTarget").hidden =
-    isSoundAction || isScreenshotAction;
+    isSoundAction || isScreenshotAction || isAgentAction;
   document.querySelector("#soundPicker").hidden = !isSoundAction;
   document.querySelector("#screenshotSettings").hidden = !isScreenshotAction;
+  const agentSettings = document.querySelector("#agentSettings");
+  agentSettings.hidden = !isAgentAction;
+  if (isAgentAction) {
+    const agent = key.agent || "codex";
+    const status = agentStatusFor(agent);
+    const agentLabel = { codex: "Codex", claude: "Claude", gemini: "Gemini" }[agent] || "AI";
+    const workflowLabel = {
+      new: "New terminal session",
+      resume: "Continue latest session",
+      plan: "Plan before editing",
+      build: "Build a feature",
+      debug: "Debug current issue",
+      test: "Run and repair tests",
+      review: "Review working tree",
+      refactor: "Behavior-safe refactor",
+      explain: "Explain the codebase",
+      docs: "Improve documentation",
+      ship: "Final ship check"
+    }[key.agentWorkflow] || "Agent workflow";
+    const agentColor = safeColor(key.activeColor, key.color);
+    agentSettings.style.setProperty("--agent-color", agentColor);
+    document.querySelector("#agentRuntimeIcon").innerHTML = iconMarkup(key.icon);
+    document.querySelector("#agentRuntimeName").textContent = `${agentLabel} CLI`;
+    document.querySelector("#agentWorkflowName").textContent = workflowLabel;
+    const statusElement = document.querySelector("#agentRuntimeStatus");
+    statusElement.textContent = status.count ? `RUNNING ${status.count}` : "IDLE";
+    statusElement.dataset.state = status.count ? "running" : "idle";
+    document.querySelector("#agentRuntimeNote").textContent = key.agentSlot
+      ? `Session slot ${key.agentSlot} lights up while its tagged agent process is running.`
+      : "Opens in Ghostty, Terminator, or the system terminal without shell interpolation.";
+  }
   const screenshotClipboardToggle = document.querySelector("#screenshotClipboardToggle");
   screenshotClipboardToggle.checked = key?.screenshotClipboard === true;
   document.querySelector("#screenshotDestinationDescription").textContent =
@@ -1104,6 +1351,7 @@ async function flushDeviceSync() {
         setRuntimeVisualState(index, false);
       }
       renderKeys();
+      requestAgentVisualSync({ force: true });
     }
     if (revision === autoSyncRevision && !autoSyncQueued) {
       setAutoSyncStatus("Auto-synced just now", "ready");
@@ -1163,6 +1411,7 @@ async function detectDevice() {
     deviceDetected = Boolean(device.connected);
     hardwareTransportReady = Boolean(device.transportReady);
     shellActionsEnabled = device.shellActionsEnabled === true;
+    updateAgentStatuses(device.agents);
     const deviceButton = document.querySelector("#deviceButton");
     deviceButton.classList.toggle("disconnected", !deviceDetected);
     deviceButton.classList.toggle("transport-error", deviceDetected && !hardwareTransportReady);
@@ -1192,9 +1441,7 @@ async function detectDevice() {
     } else if (hardwareTransportReady && !autoSyncQueued && !deckSyncInProgress) {
       setAutoSyncStatus("Auto-sync ready", "ready");
     }
-    if (!transportWasReady && hardwareTransportReady && autoSyncQueued) {
-      void flushDeviceSync();
-    }
+    autoSyncOnTransportReady(transportWasReady);
   } catch {
     document.querySelector("#deviceStatus").textContent = "Detection unavailable";
   }
@@ -1763,13 +2010,15 @@ document.querySelector("#deviceButton").addEventListener("click", async () => {
 
 function handleHardwareEvent(message) {
   if (!message || typeof message !== "object") return;
+  if (message.event === "agent_status") {
+    updateAgentStatuses(message.agents);
+    return;
+  }
   if (message.event === "driver") {
     const transportWasReady = hardwareTransportReady;
     hardwareTransportReady = message.status === "ready";
-    if (!transportWasReady && hardwareTransportReady && autoSyncQueued) {
-      void flushDeviceSync();
-    }
-    detectDevice();
+    autoSyncOnTransportReady(transportWasReady);
+    void detectDevice();
     return;
   }
   if (message.event === "input" && message.type === "button") {
@@ -1922,10 +2171,13 @@ async function initializeNativeState() {
   }
   renderPageTabs();
   await restoreAssetPaths();
-  await detectDevice();
-  backend.listen(handleHardwareEvent).catch((error) => {
+  requestDeviceSync({ immediate: true });
+  try {
+    await backend.listen(handleHardwareEvent);
+  } catch (error) {
     console.error("Native hardware event bridge unavailable", error);
-  });
+  }
+  await detectDevice();
 }
 
 document.addEventListener("keydown", (event) => {

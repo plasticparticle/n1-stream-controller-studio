@@ -2,7 +2,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 #[cfg(unix)]
@@ -71,6 +71,15 @@ struct TestActionInput {
     sound_press_behavior: Option<String>,
     sound_loop: Option<bool>,
     screenshot_clipboard: Option<bool>,
+    agent: Option<String>,
+    agent_workflow: Option<String>,
+    agent_slot: Option<u8>,
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
+struct AgentProcessStatus {
+    count: u64,
+    slots: BTreeSet<u8>,
 }
 
 struct AppCore {
@@ -84,6 +93,7 @@ struct AppCore {
     recent_hardware_actions: Mutex<HashMap<String, Instant>>,
     pending_hardware_events: AtomicUsize,
     active_action_processes: Arc<AtomicUsize>,
+    agent_statuses: Mutex<HashMap<String, AgentProcessStatus>>,
     sync_guard: Mutex<()>,
     allow_shell_actions: bool,
     config_path: PathBuf,
@@ -97,6 +107,37 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+const AI_AGENTS: &[&str] = &["codex", "claude", "gemini"];
+const AI_AGENT_WORKFLOWS: &[&str] = &[
+    "new", "resume", "plan", "build", "debug", "test", "review", "refactor", "explain", "docs",
+    "ship",
+];
+
+fn empty_agent_statuses() -> HashMap<String, AgentProcessStatus> {
+    AI_AGENTS
+        .iter()
+        .map(|agent| ((*agent).to_string(), AgentProcessStatus::default()))
+        .collect()
+}
+
+fn agent_statuses_json(statuses: &HashMap<String, AgentProcessStatus>) -> Value {
+    Value::Object(
+        AI_AGENTS
+            .iter()
+            .map(|agent| {
+                let status = statuses.get(*agent).cloned().unwrap_or_default();
+                (
+                    (*agent).to_string(),
+                    json!({
+                        "count": status.count,
+                        "slots": status.slots.into_iter().collect::<Vec<_>>()
+                    }),
+                )
+            })
+            .collect(),
+    )
 }
 
 fn error_text(error: impl std::fmt::Display) -> String {
@@ -358,6 +399,7 @@ impl AppCore {
             recent_hardware_actions: Mutex::new(HashMap::new()),
             pending_hardware_events: AtomicUsize::new(0),
             active_action_processes: Arc::new(AtomicUsize::new(0)),
+            agent_statuses: Mutex::new(empty_agent_statuses()),
             sync_guard: Mutex::new(()),
             allow_shell_actions: std::env::var(SHELL_ACTION_OPT_IN).as_deref() == Ok("1"),
             config_path,
@@ -422,6 +464,7 @@ impl AppCore {
 
     fn device_status(&self) -> Value {
         let driver = self.driver.public_state();
+        let agents = agent_statuses_json(&lock(&self.agent_statuses));
         for entry in fs::read_dir(USB_ROOT).into_iter().flatten().flatten() {
             let path = entry.path();
             let vendor_id = read_text(path.join("idVendor")).to_lowercase();
@@ -436,6 +479,7 @@ impl AppCore {
                     "busPath": entry.file_name().to_string_lossy(),
                     "transportReady": driver.status == "ready",
                     "shellActionsEnabled": self.allow_shell_actions,
+                    "agents": agents,
                     "driver": driver
                 });
             }
@@ -447,6 +491,7 @@ impl AppCore {
             "product": "VSDinside N1",
             "transportReady": false,
             "shellActionsEnabled": self.allow_shell_actions,
+            "agents": agents,
             "driver": driver
         })
     }
@@ -780,6 +825,7 @@ impl AppCore {
         let name = action_name(action, key);
         let is_sound = action.get("id").and_then(Value::as_str) == Some("sound");
         let is_screenshot = screenshot_kind(action).is_some();
+        let is_agent = action.get("id").and_then(Value::as_str) == Some("ai-agent");
         if is_sound {
             let active = lock(&self.active_sounds).remove(&key);
             if let Some(active) = active {
@@ -808,6 +854,8 @@ impl AppCore {
             self.resolve_sound_commands(action)
         } else if is_screenshot {
             self.resolve_screenshot_commands(action)
+        } else if is_agent {
+            resolve_agent_commands(action)
         } else if is_shell_action(action) && !self.allow_shell_actions {
             Err(format!(
                 "Shell actions are disabled. Set {SHELL_ACTION_OPT_IN}=1 before starting Studio to opt in."
@@ -1434,6 +1482,254 @@ fn screenshot_commands(
     commands
 }
 
+fn agent_workflow_prompt(workflow: &str) -> Option<&'static str> {
+    match workflow {
+        "plan" => Some(
+            "Inspect the current project and create a concise implementation plan. Do not edit files yet.",
+        ),
+        "build" => {
+            Some("Ask what I want to build, then implement it end to end and verify the result.")
+        }
+        "debug" => Some(
+            "Diagnose the current problem from evidence, fix the root cause, and run relevant checks.",
+        ),
+        "test" => Some(
+            "Run the relevant test suite, investigate failures, and fix regressions without weakening tests.",
+        ),
+        "review" => Some(
+            "Review the current working tree for correctness, regressions, security issues, and missing tests.",
+        ),
+        "refactor" => Some(
+            "Identify a valuable refactor in the current code and improve it without changing behavior.",
+        ),
+        "explain" => Some(
+            "Explain this codebase architecture, its main execution flow, and the best place to start working.",
+        ),
+        "docs" => Some(
+            "Review and improve the project documentation so setup, usage, and maintenance are clear.",
+        ),
+        "ship" => Some(
+            "Run final quality checks, review the diff, and prepare a concise handoff. Do not commit or push unless I explicitly ask.",
+        ),
+        _ => None,
+    }
+}
+
+fn agent_cli_args(agent: &str, workflow: &str) -> Vec<String> {
+    if workflow == "new" {
+        return Vec::new();
+    }
+    if workflow == "resume" {
+        return match agent {
+            "codex" => vec!["resume".into(), "--last".into()],
+            "claude" => vec!["--continue".into()],
+            "gemini" => vec!["--resume".into()],
+            _ => Vec::new(),
+        };
+    }
+    let Some(prompt) = agent_workflow_prompt(workflow) else {
+        return Vec::new();
+    };
+    match (agent, workflow) {
+        ("claude", "plan") => vec!["--permission-mode".into(), "plan".into(), prompt.into()],
+        ("gemini", _) => vec!["--prompt-interactive".into(), prompt.into()],
+        _ => vec![prompt.into()],
+    }
+}
+
+fn find_agent_executable(agent: &str) -> Option<PathBuf> {
+    if !AI_AGENTS.contains(&agent) {
+        return None;
+    }
+    let mut directories = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .unwrap_or_default();
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        directories.extend([
+            home.join(".local/bin"),
+            home.join(".npm-global/bin"),
+            home.join(".local/share/pnpm"),
+        ]);
+    }
+    directories.extend(
+        TRUSTED_PROGRAM_DIRS
+            .iter()
+            .map(|directory| PathBuf::from(*directory)),
+    );
+    directories.into_iter().find_map(|directory| {
+        let candidate = directory.join(agent);
+        is_user_executable(&candidate).then_some(candidate)
+    })
+}
+
+fn is_user_executable(path: &Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        metadata.is_file()
+    }
+}
+
+fn resolve_agent_commands(action: &Value) -> Result<Vec<ResolvedAction>, String> {
+    validate_agent_action(action)?;
+    let agent = action
+        .get("agent")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "AI agent action has no CLI".to_string())?;
+    let workflow = action
+        .get("agentWorkflow")
+        .and_then(Value::as_str)
+        .unwrap_or("new");
+    let executable = find_agent_executable(agent)
+        .ok_or_else(|| format!("{agent} CLI was not found in PATH or ~/.local/bin"))?;
+    let env_program = trusted_program_path("env")
+        .map_err(|error| format!("Unable to locate the system env launcher: {error}"))?;
+    let mut launch = vec![
+        env_program.to_string_lossy().into_owned(),
+        format!("N1_STREAMCTRL_AGENT={agent}"),
+    ];
+    if let Some(slot) = action.get("agentSlot").and_then(Value::as_u64) {
+        launch.push(format!("N1_STREAMCTRL_SLOT={slot}"));
+    }
+    launch.push(executable.to_string_lossy().into_owned());
+    launch.extend(agent_cli_args(agent, workflow));
+
+    let with_prefix = |program: &str, prefix: &[&str]| {
+        let mut args = prefix
+            .iter()
+            .map(|argument| (*argument).to_string())
+            .collect::<Vec<_>>();
+        args.extend(launch.clone());
+        ResolvedAction {
+            program: program.into(),
+            args,
+        }
+    };
+    Ok(vec![
+        with_prefix("ghostty", &["+new-window", "-e"]),
+        with_prefix("terminator", &["-x"]),
+        with_prefix("x-terminal-emulator", &["-e"]),
+    ])
+}
+
+fn classify_agent_process(cmdline: &[u8]) -> Option<&'static str> {
+    let arguments = cmdline
+        .split(|byte| *byte == 0)
+        .filter(|argument| !argument.is_empty())
+        .take(5)
+        .map(|argument| String::from_utf8_lossy(argument).to_lowercase())
+        .collect::<Vec<_>>();
+    let executable = arguments
+        .first()
+        .and_then(|argument| Path::new(argument.as_str()).file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if let Some(agent) = AI_AGENTS.iter().find(|agent| executable == **agent) {
+        return Some(*agent);
+    }
+    for argument in arguments.iter().skip(1) {
+        if argument.contains("@anthropic-ai/claude-code") {
+            return Some("claude");
+        }
+        if argument.contains("@google/gemini-cli") {
+            return Some("gemini");
+        }
+        if argument.contains("@openai/codex") || argument.ends_with("/codex/bin/codex") {
+            return Some("codex");
+        }
+    }
+    None
+}
+
+fn process_environment_value(environ: &[u8], name: &str) -> Option<String> {
+    let prefix = format!("{name}=");
+    environ
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| std::str::from_utf8(entry).ok())
+        .find_map(|entry| entry.strip_prefix(&prefix).map(str::to_string))
+}
+
+fn scan_agent_processes(proc_root: &Path) -> HashMap<String, AgentProcessStatus> {
+    let mut statuses = empty_agent_statuses();
+    for entry in fs::read_dir(proc_root).into_iter().flatten().flatten() {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .chars()
+            .all(|character| character.is_ascii_digit())
+        {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(cmdline) = fs::read(path.join("cmdline")) else {
+            continue;
+        };
+        if cmdline.len() > 65_536 {
+            continue;
+        }
+        let Some(agent) = classify_agent_process(&cmdline) else {
+            continue;
+        };
+        let status = statuses
+            .get_mut(agent)
+            .expect("known agents are initialized");
+        status.count += 1;
+        let Ok(environ) = fs::read(path.join("environ")) else {
+            continue;
+        };
+        if environ.len() > 1_048_576
+            || process_environment_value(&environ, "N1_STREAMCTRL_AGENT").as_deref() != Some(agent)
+        {
+            continue;
+        }
+        if let Some(slot) = process_environment_value(&environ, "N1_STREAMCTRL_SLOT")
+            .and_then(|slot| slot.parse::<u8>().ok())
+            .filter(|slot| (1..=5).contains(slot))
+        {
+            status.slots.insert(slot);
+        }
+    }
+    for status in statuses.values_mut() {
+        for slot in 1..=5 {
+            if status.slots.len() >= status.count.min(5) as usize {
+                break;
+            }
+            status.slots.insert(slot);
+        }
+    }
+    statuses
+}
+
+fn start_agent_monitor(core: Arc<AppCore>) {
+    thread::spawn(move || {
+        loop {
+            let statuses = scan_agent_processes(Path::new("/proc"));
+            let changed = {
+                let mut current = lock(&core.agent_statuses);
+                if *current == statuses {
+                    false
+                } else {
+                    *current = statuses.clone();
+                    true
+                }
+            };
+            if changed {
+                core.emit(json!({
+                    "event": "agent_status",
+                    "agents": agent_statuses_json(&statuses)
+                }));
+            }
+            thread::sleep(Duration::from_millis(1_200));
+        }
+    });
+}
+
 fn resolve_action_command(action: &Value, allow_shell_actions: bool) -> Option<ResolvedAction> {
     let id = action.get("id").and_then(Value::as_str)?;
     let target = action
@@ -1546,6 +1842,7 @@ fn validated_test_action(input: TestActionInput) -> Result<Value, String> {
     if !valid_action_id(&input.id) {
         return Err("Unsupported action type".into());
     }
+    let is_agent = input.id == "ai-agent";
     let target = input.target.unwrap_or_default();
     if target.len() > 2_048 {
         return Err("Action targets must be no longer than 2,048 bytes".into());
@@ -1561,6 +1858,15 @@ fn validated_test_action(input: TestActionInput) -> Result<Value, String> {
         "soundLoop": input.sound_loop.unwrap_or(false),
         "screenshotClipboard": input.screenshot_clipboard.unwrap_or(false)
     });
+    if is_agent {
+        action["agent"] = Value::String(input.agent.unwrap_or_else(|| "codex".into()));
+        action["agentWorkflow"] =
+            Value::String(input.agent_workflow.unwrap_or_else(|| "new".into()));
+        if let Some(slot) = input.agent_slot {
+            action["agentSlot"] = json!(slot);
+        }
+        validate_agent_action(&action)?;
+    }
     if let Some(id) = input.sound_id {
         if !valid_stored_asset_id(&id) || !has_asset_extension(&id, SOUND_EXTENSIONS) {
             return Err("Invalid sound asset ID".into());
@@ -1625,6 +1931,9 @@ fn validate_sync_payload(payload: &Value) -> Result<(), String> {
             .ok_or_else(|| "Each configured key must have an action type".to_string())?;
         if !valid_action_id(id) {
             return Err(format!("Unsupported action type: {id}"));
+        }
+        if id == "ai-agent" {
+            validate_agent_action(key)?;
         }
         if screenshot_kind(key).is_some()
             && key
@@ -1729,12 +2038,50 @@ fn valid_action_id(id: &str) -> bool {
             | "screenshot-window"
             | "music"
             | "lock"
+            | "ai-agent"
     ) || (id.starts_with("custom-")
         && id.len() > "custom-".len()
         && id.len() <= 64
         && id
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || character == '-'))
+}
+
+fn validate_agent_action(action: &Value) -> Result<(), String> {
+    let agent = action.get("agent").and_then(Value::as_str).unwrap_or("");
+    if !AI_AGENTS.contains(&agent) {
+        return Err("AI agent actions must use codex, claude, or gemini".into());
+    }
+    let workflow = action
+        .get("agentWorkflow")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if !AI_AGENT_WORKFLOWS.contains(&workflow) {
+        return Err("Unsupported AI agent workflow".into());
+    }
+    if let Some(slot) = action.get("agentSlot").and_then(Value::as_u64)
+        && !(1..=5).contains(&slot)
+    {
+        return Err("AI agent slots must be between 1 and 5".into());
+    }
+    if action.get("agentSlot").is_some()
+        && action.get("agentSlot").and_then(Value::as_u64).is_none()
+    {
+        return Err("AI agent slots must be numeric".into());
+    }
+    if let Some(monitor) = action.get("agentMonitor").and_then(Value::as_str)
+        && monitor != agent
+    {
+        return Err("AI agent status monitor must match the launched agent".into());
+    }
+    for field in ["activeColor", "idleColor"] {
+        if let Some(color) = action.get(field).and_then(Value::as_str)
+            && !valid_color(color)
+        {
+            return Err("AI agent colors must use six-digit hexadecimal notation".into());
+        }
+    }
+    Ok(())
 }
 
 fn valid_color(color: &str) -> bool {
@@ -2105,6 +2452,7 @@ pub fn run() {
                 .map_err(|error| std::io::Error::other(format!("Startup failed: {error}")))?;
             app.manage(AppState(core.clone()));
             build_tray(app)?;
+            start_agent_monitor(core.clone());
             if let Err(error) = core.driver.start(core.clone()) {
                 core.driver.set_state(&core, "not_installed", error);
             }
@@ -2342,6 +2690,71 @@ mod tests {
             validate_sync_payload(
                 &json!({"profile": "streaming", "keys": vec![invalid_waveform; 15]})
             )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn builds_safe_agent_workflow_arguments() {
+        assert_eq!(agent_cli_args("codex", "resume"), ["resume", "--last"]);
+        assert_eq!(agent_cli_args("claude", "resume"), ["--continue"]);
+        assert_eq!(agent_cli_args("gemini", "resume"), ["--resume"]);
+        let plan = agent_cli_args("claude", "plan");
+        assert_eq!(&plan[..2], ["--permission-mode", "plan"]);
+        assert!(plan[2].contains("Do not edit files yet"));
+        let gemini = agent_cli_args("gemini", "debug");
+        assert_eq!(gemini[0], "--prompt-interactive");
+        assert!(gemini[1].contains("root cause"));
+    }
+
+    #[test]
+    fn recognizes_agent_cli_processes_without_matching_prompt_text() {
+        assert_eq!(
+            classify_agent_process(b"/home/user/.local/bin/codex\0resume\0--last\0"),
+            Some("codex")
+        );
+        assert_eq!(
+            classify_agent_process(
+                b"/usr/bin/node\0/usr/lib/node_modules/@google/gemini-cli/dist/index.js\0"
+            ),
+            Some("gemini")
+        );
+        assert_eq!(
+            classify_agent_process(b"/bin/sh\0-c\0echo codex claude gemini\0"),
+            None
+        );
+    }
+
+    #[test]
+    fn validates_agent_profiles_and_slots() {
+        let valid_agent = json!({
+            "id": "ai-agent",
+            "agent": "codex",
+            "agentWorkflow": "debug",
+            "agentMonitor": "codex",
+            "agentSlot": 3,
+            "color": "#343c40",
+            "activeColor": "#37b7ff",
+            "idleColor": "#343c40"
+        });
+        let mut keys = vec![Value::Null; 15];
+        keys[0] = valid_agent;
+        assert!(validate_sync_payload(&json!({"profile": "codex-cli", "keys": keys})).is_ok());
+        assert!(
+            validate_agent_action(&json!({
+                "id": "ai-agent",
+                "agent": "codex",
+                "agentWorkflow": "debug",
+                "agentSlot": 7
+            }))
+            .is_err()
+        );
+        assert!(
+            validate_agent_action(&json!({
+                "id": "ai-agent",
+                "agent": "unknown",
+                "agentWorkflow": "new"
+            }))
             .is_err()
         );
     }

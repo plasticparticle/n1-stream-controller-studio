@@ -338,6 +338,21 @@
             </div>
 
             <div class="form-section action-config">
+              <div class="agent-settings" id="agentSettings" hidden>
+                <div class="label-row">
+                  <label>Agent launcher</label>
+                  <span class="asset-format-hint">GHOSTTY · TERMINATOR</span>
+                </div>
+                <div class="agent-runtime-card">
+                  <span class="agent-runtime-icon" id="agentRuntimeIcon"></span>
+                  <span>
+                    <strong id="agentRuntimeName">Codex CLI</strong>
+                    <small id="agentWorkflowName">New terminal session</small>
+                  </span>
+                  <b id="agentRuntimeStatus" data-state="idle">IDLE</b>
+                </div>
+                <p class="agent-runtime-note" id="agentRuntimeNote">Launches safely in the first supported terminal.</p>
+              </div>
               <div id="standardActionTarget">
                 <label for="actionTarget" id="targetLabel">Target scene</label>
                 <div class="select-field">

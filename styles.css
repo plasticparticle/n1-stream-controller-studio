@@ -1043,6 +1043,42 @@ kbd {
   white-space: nowrap;
 }
 
+.key-screen.agent-monitored::before {
+  background:
+    radial-gradient(circle at 50% 24%, color-mix(in srgb, var(--key-color) 42%, transparent), transparent 62%),
+    linear-gradient(160deg, color-mix(in srgb, var(--key-color) 17%, #111518), #080b0d 72%);
+  transition: background .24s ease;
+}
+
+.key-screen.agent-active::before {
+  background:
+    radial-gradient(circle at 50% 28%, color-mix(in srgb, var(--key-color) 78%, white 6%), transparent 70%),
+    linear-gradient(155deg, color-mix(in srgb, var(--key-color) 39%, #0b1013), #070a0c 76%);
+  animation: agent-active-breathe 1.8s ease-in-out infinite alternate;
+}
+
+.agent-state-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  z-index: 3;
+  width: 5px;
+  height: 5px;
+  border: 1px solid rgba(255,255,255,.26);
+  border-radius: 50%;
+  background: #394247;
+}
+
+.agent-active .agent-state-dot {
+  background: var(--key-color);
+  box-shadow: 0 0 7px var(--key-color);
+}
+
+@keyframes agent-active-breathe {
+  from { filter: brightness(.88); }
+  to { filter: brightness(1.12); }
+}
+
 .key-screen.has-sound {
   justify-content: flex-end;
   gap: 0;
@@ -1140,7 +1176,8 @@ kbd {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .key-screen.sound-playing::before {
+  .key-screen.sound-playing::before,
+  .key-screen.agent-active::before {
     animation: none;
   }
 }
@@ -1970,6 +2007,79 @@ kbd {
 
 .screenshot-settings {
   min-width: 0;
+}
+
+.agent-settings {
+  min-width: 0;
+}
+
+.agent-runtime-card {
+  min-width: 0;
+  margin-top: 7px;
+  padding: 9px;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    radial-gradient(circle at 10% 10%, color-mix(in srgb, var(--agent-color, #37b7ff) 12%, transparent), transparent 45%),
+    #0c1012;
+}
+
+.agent-runtime-icon {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--agent-color, #37b7ff) 13%, #0b0f11);
+  color: var(--agent-color, #37b7ff);
+}
+
+.agent-runtime-icon svg {
+  width: 17px;
+}
+
+.agent-runtime-card strong,
+.agent-runtime-card small {
+  display: block;
+}
+
+.agent-runtime-card strong {
+  font-size: 10px;
+}
+
+.agent-runtime-card small {
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-runtime-card b {
+  padding: 3px 5px;
+  border-radius: 4px;
+  background: #20272a;
+  color: #748086;
+  font: 700 7px "DM Mono", monospace;
+  letter-spacing: .08em;
+}
+
+.agent-runtime-card b[data-state="running"] {
+  background: color-mix(in srgb, var(--agent-color, #37b7ff) 16%, #111719);
+  color: var(--agent-color, #37b7ff);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--agent-color, #37b7ff) 18%, transparent);
+}
+
+.agent-runtime-note {
+  margin: 7px 2px 0;
+  color: #687378;
+  font-size: 8px;
+  line-height: 1.45;
 }
 
 .screenshot-output-toggle {

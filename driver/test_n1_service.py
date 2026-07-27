@@ -141,5 +141,57 @@ class ScreenshotDisplayTests(unittest.TestCase):
         self.assertNotEqual(rendered[1].tobytes(), rendered[2].tobytes())
 
 
+class AgentDisplayTests(unittest.TestCase):
+    def test_agent_and_workflow_icons_render_distinct_key_art(self):
+        rendered = []
+        for icon in (
+            "codexAgent",
+            "claudeAgent",
+            "geminiAgent",
+            "resume",
+            "plan",
+            "build",
+            "bug",
+            "test",
+            "review",
+            "refactor",
+            "explain",
+            "docs",
+            "ship",
+        ):
+            rendered.append(
+                n1_service.render_key(
+                    {
+                        "id": "ai-agent",
+                        "title": icon,
+                        "color": "#37b7ff",
+                        "icon": icon,
+                    }
+                )
+            )
+
+        self.assertTrue(all(image.size == n1_service.KEY_SIZE for image in rendered))
+        self.assertEqual(len({image.tobytes() for image in rendered}), len(rendered))
+
+    def test_running_agent_slot_has_an_illuminated_status_dot(self):
+        key = {
+            "id": "ai-agent",
+            "title": "CODEX 1",
+            "color": "#343c40",
+            "icon": "codexAgent",
+            "agentMonitor": "codex",
+        }
+        idle = n1_service.render_key(key)
+        active = n1_service.render_key(
+            {
+                **key,
+                "color": "#37b7ff",
+                "agentActive": True,
+            }
+        )
+
+        self.assertNotEqual(idle.getpixel((82, 13)), active.getpixel((82, 13)))
+
+
 if __name__ == "__main__":
     unittest.main()

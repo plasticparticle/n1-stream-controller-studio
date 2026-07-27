@@ -139,6 +139,7 @@ transferred automatically; uploaded animations start after the queued transfer c
 - Applies physical display brightness
 - Maintains profiles and local drafts
 - Automatically transfers layout changes to the connected N1
+- Includes Codex CLI, Claude CLI, and Gemini CLI control profiles with live session-slot colors
 - Supports static and animated custom icons with momentary or toggle states
 - Plays assigned WAV, MP3, OGG, and FLAC files with stop, restart, and continuous-loop modes
 - Listens for buttons and rotary-dial events through the vendor HID interface
@@ -154,6 +155,20 @@ The hardware service monitors the N1 connection continuously. If the USB cable i
 removed, Studio releases the stale HID handle and automatically opens the controller
 again after it is reconnected. Restarting Studio is not required.
 
+## AI coding profiles
+
+The three built-in AI coding profiles share the same 15-key layout:
+
+- Five independently monitored session slots
+- Resume, plan, build, debug, and test workflows
+- Review, refactor, explain, documentation, and final ship-check workflows
+
+Agent launchers use fixed arguments and do not require shell-action opt-in. Studio looks
+for each CLI in `PATH` and common user install directories, then opens it in Ghostty,
+Terminator, or the system terminal. Tagged sessions illuminate their matching slot;
+manually started Codex, Claude, and Gemini processes fill the first available slots.
+The live colors indicate running versus idle process state.
+
 ## Shell action security
 
 Custom commands, launch actions, and hotkey command strings execute with your user
@@ -164,8 +179,9 @@ Studio explicitly with:
 N1_STUDIO_ALLOW_SHELL_ACTIONS=1 n1-stream-controller-studio
 ```
 
-Built-in actions, websites, folders, and sound playback do not require this opt-in.
-Do not enable shell actions for profiles you did not create and inspect yourself.
+Built-in actions—including the fixed AI CLI workflows—websites, folders, and sound
+playback do not require this opt-in. Do not enable shell actions for profiles you did
+not create and inspect yourself.
 
 ## Commands
 
