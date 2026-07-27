@@ -2193,7 +2193,7 @@ fn resolve_action_command(action: &Value, allow_shell_actions: bool) -> Option<R
             &["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"],
         )),
         "music" => Some(fixed("playerctl", &["play-pause"])),
-        "lock" => Some(fixed("loginctl", &["lock-session"])),
+        "lock" => Some(fixed("xdg-screensaver", &["lock"])),
         "website" if target.starts_with("http://") || target.starts_with("https://") => {
             Some(fixed("xdg-open", &[target]))
         }
@@ -3178,6 +3178,11 @@ mod tests {
         .expect("built-in action");
         assert_eq!(builtin.program, "wpctl");
         assert!(!builtin.args.join(" ").contains("touch"));
+
+        let lock =
+            resolve_action_command(&json!({"id": "lock"}), false).expect("built-in lock action");
+        assert_eq!(lock.program, "xdg-screensaver");
+        assert_eq!(lock.args, ["lock"]);
     }
 
     #[test]
