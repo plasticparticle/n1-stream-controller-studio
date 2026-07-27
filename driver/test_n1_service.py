@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from driver import n1_service
 
@@ -62,6 +62,83 @@ class DriverLifecycleTests(unittest.TestCase):
                 200,
             )
             self.assertIsNone(n1_service.find_studio_owner(100, proc_root))
+
+    def test_identifies_only_driver_locks_without_a_live_studio_owner_as_orphaned(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proc_root = Path(temp_dir) / "proc"
+            proc_root.mkdir()
+            lock_path = Path(temp_dir) / "driver.lock"
+            lock_path.write_text("300\n", encoding="utf-8")
+
+            for pid, name, parent in (
+                (300, "n1-driver", 200),
+                (200, "n1-stream-contr", 1),
+            ):
+                process = proc_root / str(pid)
+                process.mkdir()
+                (process / "comm").write_text(f"{name}\n", encoding="utf-8")
+                (process / "status").write_text(
+                    f"Name:\t{name}\nPPid:\t{parent}\n", encoding="utf-8"
+                )
+
+            self.assertIsNone(
+                n1_service.orphaned_driver_owner(lock_path, proc_root)
+            )
+            (proc_root / "200" / "comm").write_text("dead-studio\n", encoding="utf-8")
+            self.assertEqual(
+                n1_service.orphaned_driver_owner(lock_path, proc_root),
+                300,
+            )
+
+    def test_reclaims_an_orphaned_driver_lock_without_blocking_startup(self):
+        lock_path = Path("/tmp/test-n1-driver.lock")
+        with (
+            patch.object(
+                n1_service,
+                "acquire_instance_lock",
+                side_effect=BlockingIOError(),
+            ),
+            patch.object(n1_service, "orphaned_driver_owner", return_value=300),
+            patch.object(n1_service, "wait_for_instance_lock", return_value=42),
+            patch.object(n1_service, "emit"),
+            patch.object(n1_service.os, "kill") as kill,
+        ):
+            descriptor = n1_service.acquire_studio_instance_lock(lock_path)
+
+        self.assertEqual(descriptor, 42)
+        kill.assert_called_once_with(300, n1_service.signal.SIGTERM)
+
+    def test_force_stops_only_the_same_confirmed_orphan_after_graceful_timeout(self):
+        lock_path = Path("/tmp/test-n1-driver.lock")
+        with (
+            patch.object(
+                n1_service,
+                "acquire_instance_lock",
+                side_effect=BlockingIOError(),
+            ),
+            patch.object(
+                n1_service,
+                "orphaned_driver_owner",
+                side_effect=[300, 300],
+            ),
+            patch.object(
+                n1_service,
+                "wait_for_instance_lock",
+                side_effect=[None, 42],
+            ),
+            patch.object(n1_service, "emit"),
+            patch.object(n1_service.os, "kill") as kill,
+        ):
+            descriptor = n1_service.acquire_studio_instance_lock(lock_path)
+
+        self.assertEqual(descriptor, 42)
+        self.assertEqual(
+            kill.call_args_list,
+            [
+                call(300, n1_service.signal.SIGTERM),
+                call(300, n1_service.signal.SIGKILL),
+            ],
+        )
 
 
 class DeviceInitializationTests(unittest.TestCase):
@@ -141,6 +218,20 @@ class StatusDisplayTests(unittest.TestCase):
 
         self.assertEqual(codex.size, (80, 80))
         self.assertNotEqual(codex.tobytes(), claude.tobytes())
+
+    def test_page_status_display_renders_the_current_page(self):
+        first_page = n1_service.render_status_icon(1, 1)
+        second_page = n1_service.render_status_icon(1, 2)
+
+        self.assertEqual(first_page.size, (80, 80))
+        self.assertNotEqual(first_page.tobytes(), second_page.tobytes())
+
+    def test_dial_status_uses_a_yellow_accent_on_the_dark_card(self):
+        dial = n1_service.render_status_icon(2)
+
+        self.assertEqual(dial.size, (80, 80))
+        self.assertEqual(dial.getpixel((11, 15)), n1_service.rgb("#e5a900"))
+        self.assertEqual(dial.getpixel((20, 60)), (9, 14, 19))
 
 
 class SoundDisplayTests(unittest.TestCase):

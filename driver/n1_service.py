@@ -30,6 +30,8 @@ KEY_SIZE = (96, 96)
 USB_SYSFS_ROOT = Path(os.environ.get("STREAMCTRL_USB_SYSFS", "/sys/bus/usb/devices"))
 DEVICE_MONITOR_INTERVAL = 1.0
 RECONNECT_TIMEOUT = 8.0
+INSTANCE_TERMINATE_TIMEOUT = 2.0
+INSTANCE_KILL_TIMEOUT = 1.0
 
 _stdout_lock = threading.Lock()
 _device_lock = threading.RLock()
@@ -70,6 +72,84 @@ def acquire_instance_lock(path: Path | None = None, blocking: bool = True) -> in
     except Exception:
         os.close(descriptor)
         raise
+
+
+def instance_lock_owner(path: Path) -> int | None:
+    try:
+        owner = int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    return owner if owner > 1 else None
+
+
+def orphaned_driver_owner(
+    lock_path: Path, proc_root: Path = Path("/proc")
+) -> int | None:
+    owner_pid = instance_lock_owner(lock_path)
+    if (
+        owner_pid is None
+        or owner_pid == os.getpid()
+        or not process_name(owner_pid, proc_root).startswith("n1-driver")
+        or find_studio_owner(owner_pid, proc_root) is not None
+    ):
+        return None
+    return owner_pid
+
+
+def wait_for_instance_lock(lock_path: Path, timeout: float) -> int | None:
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return acquire_instance_lock(lock_path, blocking=False)
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                return None
+            _device_monitor_stop.wait(0.1)
+
+
+def acquire_studio_instance_lock(path: Path | None = None) -> int:
+    lock_path = path or instance_lock_path()
+    try:
+        return acquire_instance_lock(lock_path, blocking=False)
+    except BlockingIOError:
+        owner_pid = orphaned_driver_owner(lock_path)
+        if owner_pid is None:
+            raise
+
+    emit(
+        {
+            "event": "log",
+            "level": "warning",
+            "message": f"Stopping orphaned N1 driver process {owner_pid}",
+        }
+    )
+    try:
+        os.kill(owner_pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+
+    descriptor = wait_for_instance_lock(lock_path, INSTANCE_TERMINATE_TIMEOUT)
+    if descriptor is not None:
+        return descriptor
+
+    if orphaned_driver_owner(lock_path) != owner_pid:
+        raise BlockingIOError("The N1 driver lock changed owners during recovery")
+    emit(
+        {
+            "event": "log",
+            "level": "warning",
+            "message": f"Force-stopping unresponsive orphaned N1 driver process {owner_pid}",
+        }
+    )
+    try:
+        os.kill(owner_pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+    descriptor = wait_for_instance_lock(lock_path, INSTANCE_KILL_TIMEOUT)
+    if descriptor is not None:
+        return descriptor
+    raise BlockingIOError("Timed out while reclaiming the N1 driver lock")
 
 
 def release_instance_lock() -> None:
@@ -608,11 +688,75 @@ def render_profile_status(profile_name: str) -> Image.Image:
     return image
 
 
+def render_page_status(page_number: int) -> Image.Image:
+    image = Image.new("RGB", (80, 80), (4, 7, 10))
+    draw = ImageDraw.Draw(image)
+    accent = rgb("#f2592f")
+    draw.rounded_rectangle(
+        (5, 5, 74, 74),
+        radius=12,
+        fill=(9, 14, 19),
+        outline=(83, 43, 32),
+        width=2,
+    )
+    draw.rounded_rectangle((10, 11, 13, 26), radius=2, fill=accent)
+    draw.text((18, 10), "PAGE", font=find_font(8, bold=True), fill=(239, 118, 80))
+
+    label = str(max(1, int(page_number)))
+    font = find_font(27 if len(label) == 1 else 23, bold=True)
+    box = draw.textbbox((0, 0), label, font=font)
+    width = box[2] - box[0]
+    draw.text(
+        ((80 - width) / 2, 29),
+        label,
+        font=font,
+        fill=(244, 248, 255),
+    )
+
+    draw.line((17, 68, 63, 68), fill=(52, 61, 66), width=1)
+    draw.ellipse((37, 66, 42, 71), fill=accent)
+    return image
+
+
+def render_dial_status() -> Image.Image:
+    image = Image.new("RGB", (80, 80), (4, 7, 10))
+    draw = ImageDraw.Draw(image)
+    accent = rgb("#e5a900")
+    draw.rounded_rectangle(
+        (5, 5, 74, 74),
+        radius=12,
+        fill=(9, 14, 19),
+        outline=(91, 70, 12),
+        width=2,
+    )
+    draw.rounded_rectangle((10, 11, 13, 26), radius=2, fill=accent)
+    draw.text((18, 10), "DIAL", font=find_font(8, bold=True), fill=(235, 188, 32))
+
+    label = "☀"
+    font = find_font(25, bold=True)
+    box = draw.textbbox((0, 0), label, font=font)
+    width = box[2] - box[0]
+    draw.text(
+        ((80 - width) / 2, 29),
+        label,
+        font=font,
+        fill=(244, 248, 255),
+    )
+
+    draw.line((17, 68, 63, 68), fill=(52, 61, 66), width=1)
+    draw.ellipse((37, 66, 42, 71), fill=accent)
+    return image
+
+
 def render_status_icon(
     kind: int, page_number: int = 1, profile_name: str = "N1"
 ) -> Image.Image:
     if kind == 0:
         return render_profile_status(profile_name)
+    if kind == 1:
+        return render_page_status(page_number)
+    if kind == 2:
+        return render_dial_status()
     colors = ("#f2592f", "#2879ed", "#e5a900")
     image = Image.new("RGB", (80, 80), (4, 5, 7))
     draw = ImageDraw.Draw(image)
@@ -1030,8 +1174,21 @@ def main() -> int:
 
     is_probe = "--probe" in sys.argv
     try:
-        _instance_lock_fd = acquire_instance_lock(blocking=not is_probe)
+        _instance_lock_fd = (
+            acquire_instance_lock(blocking=False)
+            if is_probe
+            else acquire_studio_instance_lock()
+        )
     except BlockingIOError:
+        if not is_probe:
+            emit(
+                {
+                    "event": "status",
+                    "status": "error",
+                    "error": "N1 transport is owned by another running Controller Studio",
+                }
+            )
+            return 1
         emit(
             {
                 "event": "status",
