@@ -45,6 +45,13 @@
     ],
     "externalBin": [
       "binaries/n1-driver"
-    ]
+    ],
+    "linux": {
+      "deb": {
+        "recommends": [
+          "wmctrl"
+        ]
+      }
+    }
   }
 }

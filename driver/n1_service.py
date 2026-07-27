@@ -452,18 +452,84 @@ def apply_sound_visual(
     return True
 
 
-def status_label(kind: int, page_number: int = 1) -> str:
-    return ("N1", f"{page_number:02d}", "☀")[kind]
+def status_label(kind: int, page_number: int = 1, profile_name: str = "N1") -> str:
+    return (profile_name, f"{page_number:02d}", "☀")[kind]
 
 
-def render_status_icon(kind: int, page_number: int = 1) -> Image.Image:
+def profile_status_lines(profile_name: str) -> list[str]:
+    normalized = " ".join(str(profile_name or "PROFILE").upper().split())
+    words = normalized.split()
+    if len(normalized) <= 10:
+        return [normalized]
+    if len(words) > 1:
+        best_split = min(
+            range(1, len(words)),
+            key=lambda index: abs(
+                len(" ".join(words[:index])) - len(" ".join(words[index:]))
+            ),
+        )
+        return [
+            " ".join(words[:best_split])[:14],
+            " ".join(words[best_split:])[:14],
+        ]
+    return [normalized[:11] + ("…" if len(normalized) > 11 else "")]
+
+
+def render_profile_status(profile_name: str) -> Image.Image:
+    image = Image.new("RGB", (80, 80), (4, 7, 10))
+    draw = ImageDraw.Draw(image)
+    accent = rgb("#f2592f")
+    draw.rounded_rectangle(
+        (5, 5, 74, 74),
+        radius=12,
+        fill=(9, 14, 19),
+        outline=(83, 43, 32),
+        width=2,
+    )
+    draw.rounded_rectangle((10, 11, 13, 26), radius=2, fill=accent)
+    draw.text((18, 10), "PROFILE", font=find_font(8, bold=True), fill=(239, 118, 80))
+
+    lines = profile_status_lines(profile_name)
+    font_size = 17 if len(lines) == 1 else 14
+    while font_size > 9:
+        font = find_font(font_size, bold=True)
+        if all(
+            draw.textbbox((0, 0), line, font=font)[2]
+            - draw.textbbox((0, 0), line, font=font)[0]
+            <= 62
+            for line in lines
+        ):
+            break
+        font_size -= 1
+    font = find_font(font_size, bold=True)
+    line_height = font_size + 3
+    top = 39 - (line_height * len(lines)) / 2
+    for index, line in enumerate(lines):
+        box = draw.textbbox((0, 0), line, font=font)
+        width = box[2] - box[0]
+        draw.text(
+            ((80 - width) / 2, top + index * line_height),
+            line,
+            font=font,
+            fill=(244, 248, 241),
+        )
+    draw.line((17, 68, 63, 68), fill=(52, 61, 66), width=1)
+    draw.ellipse((37, 66, 42, 71), fill=accent)
+    return image
+
+
+def render_status_icon(
+    kind: int, page_number: int = 1, profile_name: str = "N1"
+) -> Image.Image:
+    if kind == 0:
+        return render_profile_status(profile_name)
     colors = ("#f2592f", "#2879ed", "#e5a900")
     image = Image.new("RGB", (80, 80), (4, 5, 7))
     draw = ImageDraw.Draw(image)
     color = rgb(colors[kind])
     draw.rounded_rectangle((9, 9, 71, 71), radius=12, fill=color)
     font = find_font(20, bold=True)
-    label = status_label(kind, page_number)
+    label = status_label(kind, page_number, profile_name)
     box = draw.textbbox((0, 0), label, font=font)
     draw.text(((80 - (box[2] - box[0])) / 2, 26), label, font=font, fill="white")
     return image
@@ -677,6 +743,7 @@ def _sync_layout_once(payload: dict[str, Any]) -> dict[str, Any]:
     keys = list(payload.get("keys") or [])[:15]
     brightness = max(0, min(100, int(payload.get("brightness", 86))))
     page_number = max(1, min(99, int(payload.get("page", 1))))
+    profile_name = str(payload.get("profileName") or payload.get("profile") or "Profile")
 
     with _device_lock, tempfile.TemporaryDirectory(prefix="n1-controller-studio-") as temp_dir:
         temp_path = Path(temp_dir)
@@ -695,7 +762,7 @@ def _sync_layout_once(payload: dict[str, Any]) -> dict[str, Any]:
 
         for status_index in range(3):
             icon_path = temp_path / f"status-{status_index}.jpg"
-            render_status_icon(status_index, page_number).save(
+            render_status_icon(status_index, page_number, profile_name).save(
                 icon_path, "JPEG", quality=95, subsampling=0
             )
             result = device.set_key_image(16 + status_index, str(icon_path))

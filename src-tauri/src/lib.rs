@@ -431,7 +431,11 @@ impl AppCore {
                     .and_then(Value::as_str)
                     .unwrap_or("error");
                 let error = message.get("error").and_then(Value::as_str).unwrap_or("");
+                let transport_was_ready = self.driver.public_state().status == "ready";
                 self.driver.set_state(self, status, error);
+                if status == "ready" && !transport_was_ready {
+                    self.schedule_active_config_restore();
+                }
             }
             Some("input") => {
                 if !valid_hardware_input(&message) {
@@ -497,10 +501,7 @@ impl AppCore {
     }
 
     fn sync(self: &Arc<Self>, payload: Value) -> Result<Value, String> {
-        let _sync = self
-            .sync_guard
-            .try_lock()
-            .map_err(|_| "A device sync is already in progress".to_string())?;
+        let _sync = lock(&self.sync_guard);
         validate_sync_payload(&payload)?;
         let keys = payload
             .get("keys")
@@ -515,8 +516,17 @@ impl AppCore {
             .and_then(Value::as_u64)
             .unwrap_or(1)
             .clamp(1, 99);
+        let profile = payload
+            .get("profile")
+            .and_then(Value::as_str)
+            .unwrap_or("streaming");
+        let profile_name = payload
+            .get("profileName")
+            .and_then(Value::as_str)
+            .unwrap_or(profile);
         let active_config = json!({
-            "profile": payload.get("profile").and_then(Value::as_str).unwrap_or("streaming"),
+            "profile": profile,
+            "profileName": profile_name,
             "page": page,
             "brightness": brightness,
             "keys": keys
@@ -525,17 +535,7 @@ impl AppCore {
         *lock(&self.active_config) = Some(active_config.clone());
         lock(&self.key_visual_states).clear();
 
-        let mut driver_config = active_config;
-        let materialized = driver_config["keys"]
-            .as_array()
-            .expect("keys validated above")
-            .iter()
-            .map(|key| self.materialize_key(key))
-            .collect::<Result<Vec<_>, _>>()?;
-        driver_config["keys"] = Value::Array(materialized);
-        let result =
-            self.driver
-                .request(self.clone(), "sync", driver_config, Duration::from_secs(90))?;
+        let result = self.send_config_to_device(active_config)?;
         Ok(json!({
             "ok": true,
             "written": result.get("written").and_then(Value::as_u64).unwrap_or(0),
@@ -543,6 +543,44 @@ impl AppCore {
             "page": result.get("page").and_then(Value::as_u64).unwrap_or(page),
             "brightness": result.get("brightness").and_then(Value::as_u64).unwrap_or(brightness)
         }))
+    }
+
+    fn send_config_to_device(self: &Arc<Self>, mut driver_config: Value) -> Result<Value, String> {
+        let materialized = driver_config["keys"]
+            .as_array()
+            .expect("keys validated above")
+            .iter()
+            .map(|key| self.materialize_key(key))
+            .collect::<Result<Vec<_>, _>>()?;
+        driver_config["keys"] = Value::Array(materialized);
+        self.driver
+            .request(self.clone(), "sync", driver_config, Duration::from_secs(90))
+    }
+
+    fn schedule_active_config_restore(self: &Arc<Self>) {
+        let core = self.clone();
+        thread::spawn(move || {
+            // Give a freshly loaded editor a short opportunity to send its newer
+            // local draft first. If it has not, restore the last native config so
+            // the deck never remains blank because a webview event was missed.
+            thread::sleep(Duration::from_millis(250));
+            let Ok(_sync) = core.sync_guard.try_lock() else {
+                return;
+            };
+            if core.driver.public_state().status != "ready" {
+                return;
+            }
+            let Some(config) = lock(&core.active_config).clone() else {
+                return;
+            };
+            if let Err(error) = core.send_config_to_device(config) {
+                core.emit(json!({
+                    "event": "driver_log",
+                    "level": "error",
+                    "message": format!("Automatic deck restore failed: {error}")
+                }));
+            }
+        });
     }
 
     fn sync_key_visual(self: &Arc<Self>, key: i64, action: Value) -> Result<Value, String> {
@@ -826,6 +864,18 @@ impl AppCore {
         let is_sound = action.get("id").and_then(Value::as_str) == Some("sound");
         let is_screenshot = screenshot_kind(action).is_some();
         let is_agent = action.get("id").and_then(Value::as_str) == Some("ai-agent");
+        if is_agent && focus_agent_terminal(action) {
+            self.emit(json!({
+                "event": "action",
+                "ok": true,
+                "key": key,
+                "name": &name,
+                "focused": true,
+                "playing": false,
+                "looping": false
+            }));
+            return Ok(());
+        }
         if is_sound {
             let active = lock(&self.active_sounds).remove(&key);
             if let Some(active) = active {
@@ -1562,6 +1612,37 @@ fn find_agent_executable(agent: &str) -> Option<PathBuf> {
     })
 }
 
+fn agent_terminal_title(action: &Value) -> Option<String> {
+    let agent = action.get("agent").and_then(Value::as_str)?;
+    let workflow = action.get("agentWorkflow").and_then(Value::as_str)?;
+    let slot = action.get("agentSlot").and_then(Value::as_u64)?;
+    if !AI_AGENTS.contains(&agent) || workflow != "new" || !(1..=5).contains(&slot) {
+        return None;
+    }
+    Some(format!("N1 Studio - {} {slot}", agent.to_uppercase()))
+}
+
+fn focus_agent_terminal(action: &Value) -> bool {
+    let Some(title) = agent_terminal_title(action) else {
+        return false;
+    };
+    let Ok(program) = trusted_program_path("wmctrl") else {
+        return false;
+    };
+    Command::new(program)
+        .args(["-a", &title])
+        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .env_remove("BASH_ENV")
+        .env_remove("CDPATH")
+        .env_remove("ENV")
+        .env_remove("SHELLOPTS")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 fn is_user_executable(path: &Path) -> bool {
     let Ok(metadata) = path.metadata() else {
         return false;
@@ -1600,22 +1681,16 @@ fn resolve_agent_commands(action: &Value) -> Result<Vec<ResolvedAction>, String>
     launch.push(executable.to_string_lossy().into_owned());
     launch.extend(agent_cli_args(agent, workflow));
 
-    let with_prefix = |program: &str, prefix: &[&str]| {
-        let mut args = prefix
-            .iter()
-            .map(|argument| (*argument).to_string())
-            .collect::<Vec<_>>();
-        args.extend(launch.clone());
-        ResolvedAction {
-            program: program.into(),
-            args,
-        }
-    };
-    Ok(vec![
-        with_prefix("ghostty", &["+new-window", "-e"]),
-        with_prefix("terminator", &["-x"]),
-        with_prefix("x-terminal-emulator", &["-e"]),
-    ])
+    let mut args = Vec::new();
+    if let Some(title) = agent_terminal_title(action) {
+        args.extend(["-T".into(), title]);
+    }
+    args.push("-e".into());
+    args.extend(launch);
+    Ok(vec![ResolvedAction {
+        program: "x-terminal-emulator".into(),
+        args,
+    }])
 }
 
 fn classify_agent_process(cmdline: &[u8]) -> Option<&'static str> {
@@ -1913,6 +1988,13 @@ fn validate_sync_payload(payload: &Value) -> Result<(), String> {
             .all(|character| character.is_ascii_alphanumeric() || " _-".contains(character))
     {
         return Err("Invalid profile name".into());
+    }
+    if let Some(profile_name) = payload.get("profileName").and_then(Value::as_str)
+        && (profile_name.trim().is_empty()
+            || profile_name.chars().count() > 40
+            || profile_name.chars().any(char::is_control))
+    {
+        return Err("Invalid profile display name".into());
     }
     let keys = payload
         .get("keys")
@@ -2708,6 +2790,26 @@ mod tests {
     }
 
     #[test]
+    fn gives_numbered_agent_sessions_stable_terminal_titles() {
+        assert_eq!(
+            agent_terminal_title(&json!({
+                "agent": "claude",
+                "agentWorkflow": "new",
+                "agentSlot": 1
+            }))
+            .as_deref(),
+            Some("N1 Studio - CLAUDE 1")
+        );
+        assert!(
+            agent_terminal_title(&json!({
+                "agent": "claude",
+                "agentWorkflow": "review"
+            }))
+            .is_none()
+        );
+    }
+
+    #[test]
     fn recognizes_agent_cli_processes_without_matching_prompt_text() {
         assert_eq!(
             classify_agent_process(b"/home/user/.local/bin/codex\0resume\0--last\0"),
@@ -2739,7 +2841,20 @@ mod tests {
         });
         let mut keys = vec![Value::Null; 15];
         keys[0] = valid_agent;
-        assert!(validate_sync_payload(&json!({"profile": "codex-cli", "keys": keys})).is_ok());
+        assert!(
+            validate_sync_payload(
+                &json!({"profile": "codex-cli", "profileName": "Codex CLI", "keys": keys})
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_sync_payload(&json!({
+                "profile": "codex-cli",
+                "profileName": "x".repeat(41),
+                "keys": vec![Value::Null; 15]
+            }))
+            .is_err()
+        );
         assert!(
             validate_agent_action(&json!({
                 "id": "ai-agent",

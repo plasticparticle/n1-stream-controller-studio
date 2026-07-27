@@ -78,6 +78,9 @@
                   <button id="duplicateProfileButton" type="button" title="Duplicate profile" aria-label="Duplicate current profile">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"></rect><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path></svg>
                   </button>
+                  <button class="profile-reset" id="resetProfileButton" type="button" title="Reset profile to default" aria-label="Reset current profile to default">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v6h6"></path><path d="M5.5 9A8 8 0 1 1 4 15"></path></svg>
+                  </button>
                   <button class="profile-delete" id="deleteProfileButton" type="button" title="Delete profile" aria-label="Delete current profile">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"></path></svg>
                   </button>
@@ -121,6 +124,7 @@
             </label>
             <div class="category-tabs" role="tablist">
               <button class="active" data-category="all" role="tab">All</button>
+              <button data-category="ai" role="tab">AI</button>
               <button data-category="system" role="tab">System</button>
               <button data-category="stream" role="tab">Stream</button>
             </div>
@@ -161,11 +165,11 @@
                 <div class="device-surface">
                   <div class="device-top-controls">
                     <div class="aux-control">
-                      <button class="side-key" data-control="cancel" title="Cancel / back" aria-label="Cancel or go back"></button>
+                      <button class="side-key" data-control="profile" title="Next profile" aria-label="Switch to next profile"></button>
                       <span>×</span>
                     </div>
                     <div class="aux-control">
-                      <button class="side-key" data-control="mode" title="Mode switch" aria-label="Switch mode"></button>
+                      <button class="side-key" data-control="mode" title="Next page" aria-label="Switch to next page"></button>
                       <span>÷</span>
                     </div>
                     <div class="dial-wrap">
@@ -236,7 +240,7 @@
             <div class="inspector-preview">
               <div class="mini-key" id="miniKey"></div>
               <div>
-                <span>SELECTED KEY</span>
+                <span id="inspectorSelectionLabel">SELECTED KEY</span>
                 <strong id="previewActionName">Switch Scene</strong>
                 <small id="previewActionType">OBS Studio</small>
               </div>
@@ -325,7 +329,7 @@
             <div class="form-section">
               <div class="label-row">
                 <label>Assigned action</label>
-                <span class="active-tag">ACTIVE</span>
+                <span class="active-tag" id="assignedActionState">ACTIVE</span>
               </div>
               <button class="action-card" id="assignedAction">
                 <span class="action-card-icon" id="assignedActionIcon"></span>
@@ -341,7 +345,7 @@
               <div class="agent-settings" id="agentSettings" hidden>
                 <div class="label-row">
                   <label>Agent launcher</label>
-                  <span class="asset-format-hint">GHOSTTY · TERMINATOR</span>
+                  <span class="asset-format-hint">SYSTEM TERMINAL</span>
                 </div>
                 <div class="agent-runtime-card">
                   <span class="agent-runtime-icon" id="agentRuntimeIcon"></span>
@@ -351,7 +355,7 @@
                   </span>
                   <b id="agentRuntimeStatus" data-state="idle">IDLE</b>
                 </div>
-                <p class="agent-runtime-note" id="agentRuntimeNote">Launches safely in the first supported terminal.</p>
+                <p class="agent-runtime-note" id="agentRuntimeNote">Launches safely in the system-configured Linux terminal.</p>
               </div>
               <div id="standardActionTarget">
                 <label for="actionTarget" id="targetLabel">Target scene</label>

@@ -65,9 +65,26 @@ class BrightnessTests(unittest.TestCase):
 
 class StatusDisplayTests(unittest.TestCase):
     def test_middle_status_display_uses_current_page_number(self):
-        self.assertEqual(n1_service.status_label(0, 7), "N1")
+        self.assertEqual(n1_service.status_label(0, 7, "Claude CLI"), "Claude CLI")
         self.assertEqual(n1_service.status_label(1, 7), "07")
         self.assertEqual(n1_service.status_label(2, 7), "☀")
+
+    def test_profile_display_balances_long_names_across_two_lines(self):
+        self.assertEqual(
+            n1_service.profile_status_lines("Claude CLI"),
+            ["CLAUDE CLI"],
+        )
+        self.assertEqual(
+            n1_service.profile_status_lines("My Extra Long Coding Profile"),
+            ["MY EXTRA LONG", "CODING PROFILE"],
+        )
+
+    def test_profile_status_display_renders_the_name(self):
+        codex = n1_service.render_status_icon(0, 1, "Codex CLI")
+        claude = n1_service.render_status_icon(0, 1, "Claude CLI")
+
+        self.assertEqual(codex.size, (80, 80))
+        self.assertNotEqual(codex.tobytes(), claude.tobytes())
 
 
 class SoundDisplayTests(unittest.TestCase):

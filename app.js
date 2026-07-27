@@ -114,7 +114,6 @@ const actionCatalog = [
   { id: "volume", name: "Mute Speakers", subtitle: "Audio control", description: "Default speakers", icon: "volume", color: "#38d996", category: "stream", group: "Streaming" },
   { id: "record", name: "Start Recording", subtitle: "OBS Studio", description: "Toggle recording", icon: "record", color: "#ef476f", category: "stream", group: "Streaming" },
   { id: "chat", name: "Show Chat", subtitle: "Browser dock", description: "Open stream chat", icon: "message", color: "#a78bfa", category: "stream", group: "Streaming" },
-  { id: "ai-agent", name: "New Codex Agent", subtitle: "AI coding CLI", description: "Open Codex in a new terminal window", agent: "codex", agentWorkflow: "new", icon: "codexAgent", color: "#37b7ff", category: "system", group: "AI Coding" },
   { id: "launch", name: "Launch App", subtitle: "Applications", description: "Choose an application", icon: "app", color: "#38d996", category: "system", group: "Desktop" },
   { id: "hotkey", name: "Keyboard Shortcut", subtitle: "System", description: "Ctrl + Shift + M", icon: "keyboard", color: "#e8ff58", category: "system", group: "Desktop" },
   { id: "command", name: "Run Command", subtitle: "Shell", description: "Execute shell command", icon: "terminal", color: "#ff9f1c", category: "system", group: "Desktop" },
@@ -142,6 +141,62 @@ const agentWorkflowDefinitions = [
   ["ship", "SHIP CHECK", "ship", "#e8ff58", "Run final checks and prepare a handoff"]
 ];
 
+const agentCatalogDefinitions = [
+  ["codex", "Codex", "codexAgent", "#37b7ff"],
+  ["claude", "Claude", "claudeAgent", "#ff9f1c"],
+  ["gemini", "Gemini", "geminiAgent", "#a78bfa"]
+];
+
+agentCatalogDefinitions.forEach(([agent, label, agentIcon, agentColor]) => {
+  for (let slot = 1; slot <= 5; slot += 1) {
+    actionCatalog.push({
+      id: "ai-agent",
+      catalogId: `ai-${agent}-slot-${slot}`,
+      name: `${label} ${slot}`,
+      subtitle: `${label} CLI · Session slot ${slot}`,
+      description: `Focus ${label} slot ${slot}, or open it in the system terminal`,
+      agent,
+      agentWorkflow: "new",
+      agentMonitor: agent,
+      agentSlot: slot,
+      activeColor: agentColor,
+      idleColor: "#343c40",
+      icon: agentIcon,
+      color: "#343c40",
+      category: "ai",
+      group: `${label} CLI`
+    });
+  }
+  actionCatalog.push({
+    id: "ai-agent",
+    catalogId: `ai-${agent}-new`,
+    name: `New ${label} Session`,
+    subtitle: `${label} CLI · new`,
+    description: `Open ${label} in the system terminal`,
+    agent,
+    agentWorkflow: "new",
+    icon: agentIcon,
+    color: agentColor,
+    category: "ai",
+    group: `${label} CLI`
+  });
+  agentWorkflowDefinitions.forEach(([workflow, title, icon, color, description]) => {
+    actionCatalog.push({
+      id: "ai-agent",
+      catalogId: `ai-${agent}-${workflow}`,
+      name: `${label} ${title}`,
+      subtitle: `${label} CLI · ${workflow}`,
+      description,
+      agent,
+      agentWorkflow: workflow,
+      icon,
+      color,
+      category: "ai",
+      group: `${label} CLI`
+    });
+  });
+});
+
 function agentProfileLayout(agent, label, icon, activeColor) {
   const idleColor = "#343c40";
   const slots = Array.from({ length: 5 }, (_, index) => [
@@ -151,7 +206,7 @@ function agentProfileLayout(agent, label, icon, activeColor) {
     {
       name: `New ${label} Agent`,
       subtitle: `${label} CLI · Session slot ${index + 1}`,
-      description: `Open ${label} in a new terminal window`,
+      description: `Focus ${label} slot ${index + 1}, or open it in the system terminal`,
       agent,
       agentWorkflow: "new",
       agentMonitor: agent,
@@ -215,6 +270,7 @@ const maxProfileNameLength = 40;
 let currentProfile = "streaming";
 let profileOrder = [];
 let selectedIndex = 0;
+let catalogPreviewAction = null;
 let currentCategory = "all";
 let history = [];
 let future = [];
@@ -278,8 +334,20 @@ function iconMarkup(name) {
 
 function createKeyData(tuple) {
   if (!tuple) return null;
-  const action = actionCatalog.find((item) => item.id === tuple[0]) || actionCatalog[0];
   const overrides = tuple[3] && typeof tuple[3] === "object" ? tuple[3] : {};
+  const matchedAction = tuple[0] === "ai-agent"
+    ? actionCatalog.find((item) =>
+      item.id === "ai-agent"
+      && item.agent === overrides.agent
+      && item.agentWorkflow === overrides.agentWorkflow
+      && (
+        overrides.agentSlot
+          ? item.agentSlot === overrides.agentSlot
+          : !item.agentSlot
+      )
+    )
+    : actionCatalog.find((item) => item.id === tuple[0]);
+  const { catalogId: _catalogId, ...action } = matchedAction || actionCatalog[0];
   const sceneTargets = {
     STARTING: "Starting Soon",
     "MAIN CAM": "Main Camera",
@@ -298,6 +366,7 @@ function createKeyData(tuple) {
 Object.keys(layouts).forEach((profile) => {
   layouts[profile] = layouts[profile].map(createKeyData);
 });
+const factoryLayouts = structuredClone(layouts);
 
 const layoutStorageKey = "n1-stream-controller-studio-layouts";
 const legacyLayoutStorageKey = "n1-studio-layouts";
@@ -450,6 +519,7 @@ function renderProfileOptions() {
   const atProfileLimit = profileOrder.length >= maxProfiles;
   const addButton = document.querySelector("#addProfileButton");
   const duplicateButton = document.querySelector("#duplicateProfileButton");
+  const resetButton = document.querySelector("#resetProfileButton");
   const deleteButton = document.querySelector("#deleteProfileButton");
   addButton.disabled = atProfileLimit;
   duplicateButton.disabled = atProfileLimit;
@@ -458,6 +528,9 @@ function renderProfileOptions() {
   duplicateButton.title = atProfileLimit
     ? `Up to ${maxProfiles} profiles are supported`
     : "Duplicate current profile";
+  resetButton.title = Object.hasOwn(factoryLayouts, currentProfile)
+    ? "Reset profile to factory defaults"
+    : "Clear profile to one empty page";
   deleteButton.title = profileOrder.length <= 1
     ? "The only profile cannot be deleted"
     : "Delete current profile";
@@ -467,6 +540,7 @@ function activateProfile(profileId, { sync = true } = {}) {
   if (!pageLayouts[profileId]) return;
   currentProfile = profileId;
   selectedIndex = 0;
+  catalogPreviewAction = null;
   duplicateSource = null;
   history = [];
   future = [];
@@ -542,6 +616,48 @@ function clearProfileRuntimeState(profileId) {
   for (const [keyIndex, stateKey] of soundPlaybackByKey) {
     if (stateKey.startsWith(prefix)) soundPlaybackByKey.delete(keyIndex);
   }
+}
+
+function factoryPagesForProfile(profileId) {
+  if (!Object.hasOwn(factoryLayouts, profileId)) {
+    return [Array(15).fill(null)];
+  }
+  const firstPage = structuredClone(factoryLayouts[profileId]);
+  return agentProfileIds.includes(profileId)
+    ? [firstPage]
+    : [firstPage, Array(15).fill(null)];
+}
+
+function resetCurrentProfile() {
+  const profileId = currentProfile;
+  const profileName = profileNames[profileId];
+  const isBuiltIn = Object.hasOwn(factoryLayouts, profileId);
+  const resetDescription = isBuiltIn
+    ? "Every page and action will be restored to the original factory layout."
+    : "Every page and action will be removed, leaving one empty page.";
+  if (!window.confirm(`Reset “${profileName}”? ${resetDescription} This cannot be undone.`)) {
+    return;
+  }
+
+  pageLayouts[profileId] = factoryPagesForProfile(profileId);
+  currentPageByProfile[profileId] = 0;
+  clearProfileRuntimeState(profileId);
+  selectedIndex = 0;
+  catalogPreviewAction = null;
+  duplicateSource = null;
+  history = [];
+  future = [];
+  updateHistoryButtons();
+  renderProfileOptions();
+  renderPageTabs();
+  renderKeys();
+  void requestDeviceSync({ immediate: true, announce: true });
+  showToast(
+    "Profile reset",
+    isBuiltIn
+      ? `${profileName} is back to its factory layout.`
+      : `${profileName} now contains one empty page.`
+  );
 }
 
 function deleteCurrentProfile() {
@@ -937,6 +1053,7 @@ function switchPage(pageIndex, announce = true, sync = true) {
   if (!Number.isInteger(pageIndex) || !pages[pageIndex]) return Promise.resolve();
   currentPageByProfile[currentProfile] = pageIndex;
   selectedIndex = 0;
+  catalogPreviewAction = null;
   duplicateSource = null;
   history = [];
   future = [];
@@ -1046,9 +1163,10 @@ function renderActions() {
 
     filtered.filter((action) => action.group === group).forEach((action) => {
       const item = document.createElement("button");
-      item.className = "action-item";
+      const catalogId = action.catalogId || action.id;
+      item.className = `action-item${catalogPreviewAction?.catalogId === catalogId ? " previewing" : ""}`;
       item.draggable = true;
-      item.dataset.action = action.id;
+      item.dataset.action = catalogId;
 
       const icon = document.createElement("span");
       icon.className = "action-icon";
@@ -1080,15 +1198,34 @@ function renderActions() {
 }
 
 function updateInspector() {
-  const key = activeLayout()[selectedIndex];
-  const playback = soundPlaybackStates.get(
-    visualStateKey(currentProfile, activePageIndex(), selectedIndex)
-  ) || null;
-  selectedKeyNumber.textContent = String(selectedIndex + 1).padStart(2, "0");
+  const hasSelection = Number.isInteger(selectedIndex);
+  const assignedKey = hasSelection ? activeLayout()[selectedIndex] : null;
+  const isCatalogPreview = !hasSelection && Boolean(catalogPreviewAction);
+  const key = assignedKey || (isCatalogPreview ? catalogPreviewAction : null);
+  const playback = hasSelection
+    ? soundPlaybackStates.get(
+      visualStateKey(currentProfile, activePageIndex(), selectedIndex)
+    ) || null
+    : null;
+  const inspector = document.querySelector(".inspector-panel");
+  inspector.classList.toggle("catalog-preview", isCatalogPreview);
+  inspector.classList.toggle("no-selection", !hasSelection);
+  selectedKeyNumber.textContent = hasSelection
+    ? String(selectedIndex + 1).padStart(2, "0")
+    : isCatalogPreview ? "AI" : "—";
+  document.querySelector("#inspectorSelectionLabel").textContent = isCatalogPreview
+    ? "ACTION PREVIEW"
+    : hasSelection ? "SELECTED KEY" : "NO KEY SELECTED";
   keyTitle.value = key?.title || "";
+  keyTitle.disabled = !assignedKey;
   document.querySelector("#titleCount").textContent = `${keyTitle.value.length}/18`;
-  miniKey.innerHTML = keyScreenMarkup(key, getRuntimeVisualState(selectedIndex), playback);
-  const canPreviewSound = key?.id === "sound" && Boolean(key.sound?.id);
+  miniKey.innerHTML = keyScreenMarkup(
+    key,
+    hasSelection ? getRuntimeVisualState(selectedIndex) : false,
+    playback
+  );
+  const canPreviewSound =
+    hasSelection && key?.id === "sound" && Boolean(key.sound?.id);
   miniKey.classList.toggle("sound-previewable", canPreviewSound);
   miniKey.tabIndex = canPreviewSound ? 0 : -1;
   miniKey.setAttribute("role", canPreviewSound ? "button" : "img");
@@ -1099,15 +1236,30 @@ function updateInspector() {
       : "Selected key preview"
   );
 
-  const name = key?.name || "Empty key";
-  const subtitle = key?.subtitle || "Choose an action";
-  const description = key?.description || "Click an action to assign it";
+  const name = key?.name || (hasSelection ? "Empty key" : "No key selected");
+  const subtitle = key?.subtitle || (
+    hasSelection ? "Choose an action" : "Select an action to preview"
+  );
+  const description = key?.description || (
+    hasSelection
+      ? "Click an action to assign it"
+      : "Palette clicks preview safely while no deck key is selected"
+  );
   document.querySelector("#previewActionName").textContent = name;
   document.querySelector("#previewActionType").textContent = subtitle;
   document.querySelector("#assignedActionName").textContent = name;
   document.querySelector("#assignedActionDescription").textContent = description;
   document.querySelector("#assignedActionIcon").innerHTML = iconMarkup(key?.icon || "plus");
   document.querySelector("#assignedActionIcon").style.setProperty("--icon-color", safeColor(key?.color, "#667176"));
+  const assignedActionState = document.querySelector("#assignedActionState");
+  assignedActionState.textContent = isCatalogPreview ? "PREVIEW" : assignedKey ? "ACTIVE" : "EMPTY";
+  assignedActionState.dataset.state = isCatalogPreview
+    ? "preview"
+    : assignedKey ? "active" : "empty";
+  document.querySelector("#clearKeyButton").disabled = !assignedKey;
+  document.querySelector("#duplicateButton").disabled = !assignedKey;
+  document.querySelector("#testActionButton").disabled =
+    !key || (key.id === "sound" && !key.sound?.id);
   const targetSelect = document.querySelector("#actionTarget");
   const actionValue = document.querySelector("#actionValue");
   const targetLabel = document.querySelector("#targetLabel");
@@ -1146,8 +1298,8 @@ function updateInspector() {
     statusElement.textContent = status.count ? `RUNNING ${status.count}` : "IDLE";
     statusElement.dataset.state = status.count ? "running" : "idle";
     document.querySelector("#agentRuntimeNote").textContent = key.agentSlot
-      ? `Session slot ${key.agentSlot} lights up while its tagged agent process is running.`
-      : "Opens in Ghostty, Terminator, or the system terminal without shell interpolation.";
+      ? `Slot ${key.agentSlot} lights while running; press it again to focus its terminal.`
+      : "Opens safely in the system-configured Linux terminal.";
   }
   const screenshotClipboardToggle = document.querySelector("#screenshotClipboardToggle");
   screenshotClipboardToggle.checked = key?.screenshotClipboard === true;
@@ -1166,7 +1318,9 @@ function updateInspector() {
   const [label, placeholder, useTextInput] = targetSettings[key?.id] || ["Command override", "Optional shell command", true];
   targetLabel.textContent = label;
   targetSelect.hidden = useTextInput;
+  targetSelect.disabled = !assignedKey;
   actionValue.hidden = !useTextInput;
+  actionValue.disabled = !assignedKey;
   document.querySelector(".select-field > svg").hidden = useTextInput;
   if (useTextInput) {
     actionValue.placeholder = placeholder;
@@ -1186,7 +1340,8 @@ function updateInspector() {
   const soundRestartToggle = document.querySelector("#soundRestartToggle");
   soundLoopToggle.checked = key?.soundLoop === true;
   soundRestartToggle.checked = key?.soundPressBehavior === "restart";
-  soundRestartToggle.disabled = soundLoopToggle.checked;
+  soundLoopToggle.disabled = !assignedKey;
+  soundRestartToggle.disabled = !assignedKey || soundLoopToggle.checked;
   document.querySelector(".sound-restart-toggle").classList.toggle(
     "disabled",
     soundLoopToggle.checked
@@ -1198,11 +1353,16 @@ function updateInspector() {
     soundRestartDescription = "Stop the current sound and play it from the beginning";
   }
   document.querySelector("#soundRestartDescription").textContent = soundRestartDescription;
-  document.querySelector(".action-config").style.opacity = key ? "1" : ".4";
+  screenshotClipboardToggle.disabled = !assignedKey;
+  document.querySelector(".action-config").style.opacity =
+    assignedKey ? "1" : key ? ".7" : ".4";
   document.querySelectorAll("#colorRow button").forEach((button) => {
     button.classList.toggle("active", button.dataset.color === key?.color);
+    button.disabled = !assignedKey;
   });
-  updateIconStateEditor(key);
+  document.querySelector("#customColor").disabled = !assignedKey;
+  document.querySelector("#autoColorButton").disabled = !assignedKey;
+  updateIconStateEditor(key, Boolean(assignedKey));
 }
 
 function updateIconCard(slot, visual, enabled) {
@@ -1221,15 +1381,15 @@ function updateIconCard(slot, visual, enabled) {
   name.textContent = visual?.name || (slot === "primary" ? "Add first icon" : "Optional second icon");
 }
 
-function updateIconStateEditor(key) {
+function updateIconStateEditor(key, editable = Boolean(key)) {
   const behavior = key?.visualBehavior === "toggle" ? "toggle" : "momentary";
-  updateIconCard("primary", key?.visuals?.primary || null, Boolean(key));
-  updateIconCard("secondary", key?.visuals?.secondary || null, Boolean(key));
+  updateIconCard("primary", key?.visuals?.primary || null, editable);
+  updateIconCard("secondary", key?.visuals?.secondary || null, editable);
   document.querySelector("#secondaryStateLabel").textContent =
     behavior === "toggle" ? "ON" : "PRESSED";
   document.querySelectorAll("[data-visual-behavior]").forEach((button) => {
     button.classList.toggle("active", button.dataset.visualBehavior === behavior);
-    button.disabled = !key;
+    button.disabled = !editable;
   });
   document.querySelector("#iconStateNote").textContent = !key?.visuals?.secondary
     ? "Without a second icon, the first icon stays visible."
@@ -1282,24 +1442,57 @@ function handleKeyClick(index) {
     showToast("Key duplicated", `Copied the action to key ${String(index + 1).padStart(2, "0")}.`);
   }
   selectedIndex = index;
+  catalogPreviewAction = null;
   renderKeys();
+  renderActions();
   if (!duplicated) void previewSoundKey(index);
 }
 
-function assignAction(index, actionId) {
-  const action = actionCatalog.find((item) => item.id === actionId);
-  if (!action) return;
-  snapshot();
-  activeLayout()[index] = {
-    ...action,
+function configuredCatalogAction(action, includeCatalogId = false) {
+  const { catalogId, ...assignedAction } = action;
+  return {
+    ...assignedAction,
+    ...(includeCatalogId && catalogId ? { catalogId } : {}),
     title: action.name.toUpperCase().slice(0, 18),
     target: action.description,
     visualBehavior: "momentary",
     visuals: { primary: null, secondary: null }
   };
+}
+
+function previewCatalogAction(actionId) {
+  const action = actionCatalog.find((item) => (item.catalogId || item.id) === actionId);
+  if (!action) return;
+  selectedIndex = null;
+  duplicateSource = null;
+  catalogPreviewAction = configuredCatalogAction(action, true);
+  renderKeys();
+  renderActions();
+}
+
+function deselectKey() {
+  if (selectedIndex === null && !catalogPreviewAction) return;
+  selectedIndex = null;
+  catalogPreviewAction = null;
+  duplicateSource = null;
+  renderKeys();
+  renderActions();
+}
+
+function assignAction(index, actionId) {
+  const action = actionCatalog.find((item) => (item.catalogId || item.id) === actionId);
+  if (!action) return;
+  if (!Number.isInteger(index) || index < 0 || index >= activeLayout().length) {
+    previewCatalogAction(actionId);
+    return;
+  }
+  snapshot();
+  activeLayout()[index] = configuredCatalogAction(action);
   setRuntimeVisualState(index, false);
   selectedIndex = index;
+  catalogPreviewAction = null;
   renderKeys();
+  renderActions();
   requestDeviceSync();
   showToast("Action assigned", `${action.name} is ready on key ${String(index + 1).padStart(2, "0")}.`);
 }
@@ -1331,6 +1524,7 @@ async function flushDeviceSync() {
   const announce = autoSyncAnnounce;
   const payload = {
     profile: syncProfile,
+    profileName: profileNames[syncProfile] || fallbackProfileName(syncProfile),
     page: syncPage + 1,
     brightness: Number(brightness.value),
     keys: structuredClone(activeLayout())
@@ -1396,6 +1590,31 @@ async function cycleHardwarePage() {
   showToast(
     `Loading Page ${nextPage + 1}`,
     "The middle device button is updating all 15 physical keys."
+  );
+  try {
+    await requestDeviceSync({ immediate: true, announce: true });
+  } finally {
+    hardwarePageSwitching = false;
+  }
+}
+
+async function cycleHardwareProfile() {
+  if (hardwarePageSwitching || deckSyncInProgress) {
+    showToast("Profile switch in progress", "Wait for the current deck transfer to finish.");
+    return;
+  }
+  if (profileOrder.length < 2) {
+    showToast("Only one profile", "Create another profile before using the profile button.");
+    return;
+  }
+
+  hardwarePageSwitching = true;
+  const currentIndex = Math.max(0, profileOrder.indexOf(currentProfile));
+  const nextProfile = profileOrder[(currentIndex + 1) % profileOrder.length];
+  activateProfile(nextProfile, { sync: false });
+  showToast(
+    profileNames[nextProfile],
+    "Loading this profile onto the physical N1."
   );
   try {
     await requestDeviceSync({ immediate: true, announce: true });
@@ -1472,7 +1691,13 @@ document.querySelectorAll("#colorRow button").forEach((button) => {
 document.querySelector("#customColor").addEventListener("input", (event) => updateKey({ color: event.target.value }));
 document.querySelector("#autoColorButton").addEventListener("click", () => {
   const key = activeLayout()[selectedIndex];
-  if (key) updateKey({ color: actionCatalog.find((item) => item.id === key.id)?.color || "#37b7ff" });
+  if (!key) return;
+  const catalogAction = actionCatalog.find((item) =>
+    item.id === key.id
+    && (!key.agent || item.agent === key.agent)
+    && (!key.agentWorkflow || item.agentWorkflow === key.agentWorkflow)
+  );
+  updateKey({ color: catalogAction?.color || "#37b7ff" });
 });
 
 document.querySelectorAll("[data-icon-slot]").forEach((button) => {
@@ -1724,10 +1949,11 @@ document.querySelector("#identifyButton").addEventListener("click", async (event
 });
 
 document.querySelector("#testActionButton").addEventListener("click", async () => {
-  const selected = keyGrid.children[selectedIndex];
-  const action = activeLayout()[selectedIndex];
+  const hasSelection = Number.isInteger(selectedIndex);
+  const selected = hasSelection ? keyGrid.children[selectedIndex] : miniKey;
+  const action = hasSelection ? activeLayout()[selectedIndex] : catalogPreviewAction;
   if (!action) {
-    showToast("Nothing to test", "Assign an action to this key first.");
+    showToast("Nothing to test", "Select a key or preview an action from the palette.");
     return;
   }
   if (
@@ -1744,7 +1970,7 @@ document.querySelector("#testActionButton").addEventListener("click", async () =
     [{ transform: "scale(1)" }, { transform: "scale(.91)", filter: "brightness(1.7)" }, { transform: "scale(1)" }],
     { duration: 350, easing: "ease-out" }
   );
-  if (action.visuals?.secondary) {
+  if (hasSelection && action.visuals?.secondary) {
     if (action.visualBehavior === "toggle") {
       setRuntimeVisualState(selectedIndex, !getRuntimeVisualState(selectedIndex));
       renderKeys();
@@ -1766,7 +1992,7 @@ document.querySelector("#testActionButton").addEventListener("click", async () =
     }
   }
   try {
-    const result = await backend.testAction(selectedIndex + 1, action);
+    const result = await backend.testAction((hasSelection ? selectedIndex : 0) + 1, action);
     if (!result.ok) throw new Error(result.error || "Action test failed");
   } catch (error) {
     showToast("Action could not run", error.message);
@@ -1774,12 +2000,12 @@ document.querySelector("#testActionButton").addEventListener("click", async () =
 });
 
 miniKey.addEventListener("click", () => {
-  void previewSoundKey(selectedIndex);
+  if (Number.isInteger(selectedIndex)) void previewSoundKey(selectedIndex);
 });
 miniKey.addEventListener("keydown", (event) => {
   if (!["Enter", " "].includes(event.key)) return;
   event.preventDefault();
-  void previewSoundKey(selectedIndex);
+  if (Number.isInteger(selectedIndex)) void previewSoundKey(selectedIndex);
 });
 
 document.querySelector("#profileSelect").addEventListener("change", (event) => {
@@ -1873,10 +2099,18 @@ document.querySelector(".page-control").addEventListener("keydown", (event) => {
   document.querySelector(`.page-tab[data-page-index="${nextPage}"]`)?.focus();
 });
 
+document.querySelector(".stage").addEventListener("click", (event) => {
+  if (event.target.closest("button, input, select, label, a")) return;
+  deselectKey();
+});
+
 document.querySelectorAll(".side-key").forEach((button) => {
   button.addEventListener("click", () => {
-    const isCancel = button.dataset.control === "cancel";
-    if (!isCancel) {
+    if (button.dataset.control === "profile") {
+      cycleHardwareProfile();
+      return;
+    }
+    if (button.dataset.control === "mode") {
       cycleHardwarePage();
       return;
     }
@@ -1948,6 +2182,7 @@ document.querySelector("#addProfileButton").addEventListener("click", (event) =>
 document.querySelector("#duplicateProfileButton").addEventListener("click", (event) => {
   openProfileDialog("duplicate", event.currentTarget);
 });
+document.querySelector("#resetProfileButton").addEventListener("click", resetCurrentProfile);
 document.querySelector("#deleteProfileButton").addEventListener("click", deleteCurrentProfile);
 document.querySelector("#profileDialogClose").addEventListener("click", closeProfileDialog);
 document.querySelector("#profileDialog").addEventListener("click", (event) => {
@@ -2023,6 +2258,10 @@ function handleHardwareEvent(message) {
   }
   if (message.event === "input" && message.type === "button") {
     const physicalKey = Number(message.key);
+    if (physicalKey === 16) {
+      if (Number(message.state) === 1) cycleHardwareProfile();
+      return;
+    }
     if (physicalKey === 17) {
       if (Number(message.state) === 1) cycleHardwarePage();
       return;
@@ -2086,7 +2325,8 @@ function handleHardwareEvent(message) {
     }
     if (message.finished) return;
     let title = message.ok ? "Hardware action triggered" : "Action could not run";
-    if (message.stopped) title = "Sound stopped";
+    if (message.focused) title = "Agent window focused";
+    else if (message.stopped) title = "Sound stopped";
     else if (message.looping) title = "Sound looping";
     else if (message.playing) title = "Sound playing";
     showToast(
@@ -2171,12 +2411,12 @@ async function initializeNativeState() {
   }
   renderPageTabs();
   await restoreAssetPaths();
-  requestDeviceSync({ immediate: true });
   try {
     await backend.listen(handleHardwareEvent);
   } catch (error) {
     console.error("Native hardware event bridge unavailable", error);
   }
+  await requestDeviceSync({ immediate: true });
   await detectDevice();
 }
 
@@ -2194,6 +2434,7 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     closeCustomActionDialog();
     closeProfileDialog();
+    deselectKey();
   }
 });
 

@@ -137,8 +137,10 @@ transferred automatically; uploaded animations start after the queued transfer c
 - Updates the three small status-strip displays
 - Clears empty key slots and commits the display refresh
 - Applies physical display brightness
-- Maintains profiles and local drafts
-- Automatically transfers layout changes to the connected N1
+- Maintains profiles and local drafts, including per-profile factory reset
+- Automatically restores the active deck at application startup and after USB reconnects
+- Uses the top-left hardware button to cycle profiles and the middle button to cycle pages
+- Shows the active profile name on the left status-strip display
 - Includes Codex CLI, Claude CLI, and Gemini CLI control profiles with live session-slot colors
 - Supports static and animated custom icons with momentary or toggle states
 - Plays assigned WAV, MP3, OGG, and FLAC files with stop, restart, and continuous-loop modes
@@ -163,11 +165,18 @@ The three built-in AI coding profiles share the same 15-key layout:
 - Resume, plan, build, debug, and test workflows
 - Review, refactor, explain, documentation, and final ship-check workflows
 
+The Actions catalogue has a dedicated **AI** filter containing all five numbered
+session slots and the complete workflow set for Codex, Claude, and Gemini. Click an
+empty area of the editor to deselect the current key; palette clicks then preview
+actions in the inspector without changing the deck. Dragging an action onto a key
+still assigns it directly.
+
 Agent launchers use fixed arguments and do not require shell-action opt-in. Studio looks
-for each CLI in `PATH` and common user install directories, then opens it in Ghostty,
-Terminator, or the system terminal. Tagged sessions illuminate their matching slot;
-manually started Codex, Claude, and Gemini processes fill the first available slots.
-The live colors indicate running versus idle process state.
+for each CLI in `PATH` and common user install directories, then opens it with the
+system-configured `x-terminal-emulator`. Pressing a numbered session button again focuses
+its existing terminal window instead of launching a duplicate. Tagged sessions illuminate
+their matching slot; manually started Codex, Claude, and Gemini processes fill the first
+available slots. The live colors indicate running versus idle process state.
 
 ## Shell action security
 
