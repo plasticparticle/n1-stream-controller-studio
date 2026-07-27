@@ -135,7 +135,10 @@ const profileNames = {
   desktop: "Daily Desk"
 };
 
+const maxProfiles = 16;
+const maxProfileNameLength = 40;
 let currentProfile = "streaming";
+let profileOrder = [];
 let selectedIndex = 0;
 let currentCategory = "all";
 let history = [];
@@ -154,6 +157,9 @@ let autoSyncRevision = 0;
 let autoSyncAnnounce = false;
 let pendingIconSlot = null;
 let pendingSoundTarget = null;
+let profileDialogMode = "create";
+let profileDialogSource = null;
+let profileDialogTrigger = null;
 const runtimeVisualStates = new Map();
 const soundPlaybackStates = new Map();
 const soundPlaybackByKey = new Map();
@@ -209,11 +215,32 @@ Object.keys(layouts).forEach((profile) => {
 const layoutStorageKey = "n1-stream-controller-studio-layouts";
 const legacyLayoutStorageKey = "n1-studio-layouts";
 const pageStorageKey = "n1-stream-controller-studio-pages";
-const pageLayouts = {};
-const currentPageByProfile = Object.fromEntries(
-  Object.keys(layouts).map((profile) => [profile, 0])
-);
+const pageLayouts = Object.create(null);
+const currentPageByProfile = Object.create(null);
 let restoredSavedLayouts = false;
+
+function isValidProfileId(value) {
+  const profileId = String(value || "");
+  return /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(profileId)
+    && !["__proto__", "constructor", "prototype"].includes(profileId);
+}
+
+function fallbackProfileName(profileId) {
+  const words = String(profileId || "Profile")
+    .replace(/[-_]+/g, " ")
+    .trim();
+  return (words || "Profile")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    .slice(0, maxProfileNameLength);
+}
+
+function savedProfileName(names, profileId) {
+  const value = names && typeof names[profileId] === "string"
+    ? names[profileId].trim()
+    : "";
+  return (value || profileNames[profileId] || fallbackProfileName(profileId))
+    .slice(0, maxProfileNameLength);
+}
 
 try {
   const savedPageJson = localStorage.getItem(pageStorageKey) || "null";
@@ -221,23 +248,34 @@ try {
     ? JSON.parse(savedPageJson)
     : null;
   if (savedPageState?.profiles && typeof savedPageState.profiles === "object") {
-    Object.keys(layouts).forEach((profile) => {
-      const savedPages = savedPageState.profiles[profile];
-      if (
-        Array.isArray(savedPages) &&
-        savedPages.length > 0 &&
-        savedPages.length <= 99 &&
-        savedPages.every((page) => Array.isArray(page) && page.length === 15)
-      ) {
-        pageLayouts[profile] = savedPages;
-        const savedIndex = Number(savedPageState.current?.[profile]);
-        currentPageByProfile[profile] = Number.isInteger(savedIndex)
-          ? Math.max(0, Math.min(savedIndex, savedPages.length - 1))
-          : 0;
-        restoredSavedLayouts = true;
-      }
-    });
-    if (savedPageState.profile && layouts[savedPageState.profile]) {
+    const savedIds = [
+      ...(Array.isArray(savedPageState.order) ? savedPageState.order : []),
+      ...Object.keys(savedPageState.profiles)
+    ].map((profile) => String(profile));
+    [...new Set(savedIds)]
+      .filter((profile) =>
+        isValidProfileId(profile) && Object.hasOwn(savedPageState.profiles, profile)
+      )
+      .slice(0, maxProfiles)
+      .forEach((profile) => {
+        const savedPages = savedPageState.profiles[profile];
+        if (
+          Array.isArray(savedPages) &&
+          savedPages.length > 0 &&
+          savedPages.length <= 99 &&
+          savedPages.every((page) => Array.isArray(page) && page.length === 15)
+        ) {
+          pageLayouts[profile] = savedPages;
+          profileNames[profile] = savedProfileName(savedPageState.names, profile);
+          profileOrder.push(profile);
+          const savedIndex = Number(savedPageState.current?.[profile]);
+          currentPageByProfile[profile] = Number.isInteger(savedIndex)
+            ? Math.max(0, Math.min(savedIndex, savedPages.length - 1))
+            : 0;
+          restoredSavedLayouts = true;
+        }
+      });
+    if (savedPageState.profile && pageLayouts[savedPageState.profile]) {
       currentProfile = savedPageState.profile;
     }
   } else {
@@ -259,11 +297,15 @@ try {
   // A malformed local draft should never prevent the editor from loading.
 }
 
-Object.keys(layouts).forEach((profile) => {
-  if (!pageLayouts[profile]) {
+if (!profileOrder.length) {
+  Object.keys(layouts).forEach((profile) => {
     pageLayouts[profile] = [layouts[profile], Array(15).fill(null)];
-  }
-});
+    currentPageByProfile[profile] = 0;
+    profileOrder.push(profile);
+  });
+}
+
+if (!pageLayouts[currentProfile]) currentProfile = profileOrder[0];
 
 function activePageIndex(profile = currentProfile) {
   return currentPageByProfile[profile] || 0;
@@ -280,14 +322,151 @@ function replaceActiveLayout(layout) {
 function persistPages() {
   try {
     localStorage.setItem(pageStorageKey, JSON.stringify({
-      version: 1,
+      version: 2,
       profile: currentProfile,
       current: currentPageByProfile,
+      names: profileNames,
+      order: profileOrder,
       profiles: pageLayouts
     }));
   } catch {
     // Local drafts are a convenience; storage failures must not block editing.
   }
+}
+
+function renderProfileOptions() {
+  const select = document.querySelector("#profileSelect");
+  const options = profileOrder.map((profileId) => {
+    const option = document.createElement("option");
+    option.value = profileId;
+    option.textContent = profileNames[profileId];
+    return option;
+  });
+  select.replaceChildren(...options);
+  select.value = currentProfile;
+  document.querySelector("#layoutTitle").textContent = profileNames[currentProfile];
+
+  const atProfileLimit = profileOrder.length >= maxProfiles;
+  const addButton = document.querySelector("#addProfileButton");
+  const duplicateButton = document.querySelector("#duplicateProfileButton");
+  const deleteButton = document.querySelector("#deleteProfileButton");
+  addButton.disabled = atProfileLimit;
+  duplicateButton.disabled = atProfileLimit;
+  deleteButton.disabled = profileOrder.length <= 1;
+  addButton.title = atProfileLimit ? `Up to ${maxProfiles} profiles are supported` : "Add profile";
+  duplicateButton.title = atProfileLimit
+    ? `Up to ${maxProfiles} profiles are supported`
+    : "Duplicate current profile";
+  deleteButton.title = profileOrder.length <= 1
+    ? "The only profile cannot be deleted"
+    : "Delete current profile";
+}
+
+function activateProfile(profileId, { sync = true } = {}) {
+  if (!pageLayouts[profileId]) return;
+  currentProfile = profileId;
+  selectedIndex = 0;
+  duplicateSource = null;
+  history = [];
+  future = [];
+  updateHistoryButtons();
+  renderProfileOptions();
+  renderPageTabs();
+  renderKeys();
+  if (sync) requestDeviceSync({ immediate: true });
+  else persistPages();
+}
+
+function uniqueProfileName(baseName) {
+  const usedNames = new Set(
+    profileOrder.map((profileId) => profileNames[profileId].trim().toLocaleLowerCase())
+  );
+  const base = (String(baseName || "").trim() || "New Profile").slice(0, maxProfileNameLength);
+  if (!usedNames.has(base.toLocaleLowerCase())) return base;
+  for (let suffix = 2; suffix < 1000; suffix += 1) {
+    const ending = ` ${suffix}`;
+    const candidate = `${base.slice(0, maxProfileNameLength - ending.length).trimEnd()}${ending}`;
+    if (!usedNames.has(candidate.toLocaleLowerCase())) return candidate;
+  }
+  return `Profile ${Date.now().toString(36)}`.slice(0, maxProfileNameLength);
+}
+
+function createProfileId() {
+  const base = `profile-${Date.now().toString(36)}`;
+  let profileId = base;
+  let suffix = 2;
+  while (pageLayouts[profileId]) {
+    profileId = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  return profileId;
+}
+
+function createProfile(name, duplicateProfileId = null) {
+  if (profileOrder.length >= maxProfiles) {
+    showToast("Profile limit reached", `Studio supports up to ${maxProfiles} profiles.`);
+    return false;
+  }
+  const profileId = createProfileId();
+  const sourcePages = duplicateProfileId ? pageLayouts[duplicateProfileId] : null;
+  pageLayouts[profileId] = sourcePages
+    ? structuredClone(sourcePages)
+    : [Array(15).fill(null)];
+  currentPageByProfile[profileId] = sourcePages
+    ? activePageIndex(duplicateProfileId)
+    : 0;
+  profileNames[profileId] = name;
+  profileOrder.push(profileId);
+  activateProfile(profileId);
+  showToast(
+    sourcePages ? "Profile duplicated" : "Profile created",
+    sourcePages
+      ? `${name} includes all ${sourcePages.length} ${sourcePages.length === 1 ? "page" : "pages"}.`
+      : `${name} is ready for actions.`
+  );
+  return true;
+}
+
+function clearProfileRuntimeState(profileId) {
+  const prefix = `${profileId}:`;
+  for (const stateKey of runtimeVisualStates.keys()) {
+    if (stateKey.startsWith(prefix)) runtimeVisualStates.delete(stateKey);
+  }
+  for (const stateKey of soundPlaybackStates.keys()) {
+    if (stateKey.startsWith(prefix)) soundPlaybackStates.delete(stateKey);
+  }
+  for (const [keyIndex, stateKey] of soundPlaybackByKey) {
+    if (stateKey.startsWith(prefix)) soundPlaybackByKey.delete(keyIndex);
+  }
+}
+
+function deleteCurrentProfile() {
+  if (profileOrder.length <= 1) {
+    showToast("Profile required", "Studio needs at least one profile.");
+    return;
+  }
+  const deletedProfile = currentProfile;
+  const deletedName = profileNames[deletedProfile];
+  const pages = pageLayouts[deletedProfile];
+  const assignedActions = pages.reduce(
+    (count, page) => count + page.filter(Boolean).length,
+    0
+  );
+  const detail = assignedActions
+    ? ` It contains ${assignedActions} assigned ${assignedActions === 1 ? "action" : "actions"} across ${pages.length} ${pages.length === 1 ? "page" : "pages"}.`
+    : "";
+  if (!window.confirm(`Delete “${deletedName}”?${detail} This cannot be undone.`)) return;
+
+  const deletedIndex = profileOrder.indexOf(deletedProfile);
+  profileOrder.splice(deletedIndex, 1);
+  delete pageLayouts[deletedProfile];
+  delete currentPageByProfile[deletedProfile];
+  delete profileNames[deletedProfile];
+  clearProfileRuntimeState(deletedProfile);
+
+  const nextProfile = profileOrder[Math.min(deletedIndex, profileOrder.length - 1)];
+  activateProfile(nextProfile);
+  showToast("Profile deleted", `${deletedName} was removed from Studio.`);
 }
 
 function setAutoSyncStatus(message, state) {
@@ -1357,15 +1536,7 @@ miniKey.addEventListener("keydown", (event) => {
 });
 
 document.querySelector("#profileSelect").addEventListener("change", (event) => {
-  currentProfile = event.target.value;
-  selectedIndex = 0;
-  history = [];
-  future = [];
-  document.querySelector("#layoutTitle").textContent = profileNames[currentProfile];
-  updateHistoryButtons();
-  renderPageTabs();
-  renderKeys();
-  requestDeviceSync({ immediate: true });
+  activateProfile(event.target.value);
 });
 
 undoButton.addEventListener("click", () => {
@@ -1478,14 +1649,91 @@ document.querySelector("#newActionButton").addEventListener("click", () => {
   document.querySelector("#customActionName").focus();
 });
 
-function closeDialog() {
+function closeCustomActionDialog() {
   document.querySelector("#customActionDialog").classList.remove("open");
   document.querySelector("#customActionDialog").setAttribute("aria-hidden", "true");
 }
 
-document.querySelector(".dialog-close").addEventListener("click", closeDialog);
+function openProfileDialog(mode, trigger) {
+  if (profileOrder.length >= maxProfiles) {
+    showToast("Profile limit reached", `Studio supports up to ${maxProfiles} profiles.`);
+    return;
+  }
+  profileDialogMode = mode;
+  profileDialogSource = currentProfile;
+  profileDialogTrigger = trigger;
+  const isDuplicate = mode === "duplicate";
+  document.querySelector("#profileDialogKicker").textContent =
+    isDuplicate ? "DUPLICATE PROFILE" : "NEW PROFILE";
+  document.querySelector("#profileDialogTitle").textContent =
+    isDuplicate ? "Duplicate this profile" : "Create a profile";
+  document.querySelector("#profileDialogDescription").textContent = isDuplicate
+    ? "Every page, action, icon, and sound setting will be copied."
+    : "Start with one empty page. You can add actions after creating it.";
+  document.querySelector("#profileDialogSubmit").textContent =
+    isDuplicate ? "Duplicate profile" : "Create profile";
+  const nameInput = document.querySelector("#profileName");
+  nameInput.value = uniqueProfileName(
+    isDuplicate ? `${profileNames[currentProfile]} Copy` : "New Profile"
+  );
+  nameInput.setCustomValidity("");
+  const dialog = document.querySelector("#profileDialog");
+  dialog.classList.add("open");
+  dialog.setAttribute("aria-hidden", "false");
+  window.setTimeout(() => {
+    nameInput.focus();
+    nameInput.select();
+  }, 0);
+}
+
+function closeProfileDialog() {
+  const dialog = document.querySelector("#profileDialog");
+  if (!dialog.classList.contains("open")) return;
+  dialog.classList.remove("open");
+  dialog.setAttribute("aria-hidden", "true");
+  profileDialogTrigger?.focus();
+  profileDialogTrigger = null;
+}
+
+document.querySelector("#addProfileButton").addEventListener("click", (event) => {
+  openProfileDialog("create", event.currentTarget);
+});
+document.querySelector("#duplicateProfileButton").addEventListener("click", (event) => {
+  openProfileDialog("duplicate", event.currentTarget);
+});
+document.querySelector("#deleteProfileButton").addEventListener("click", deleteCurrentProfile);
+document.querySelector("#profileDialogClose").addEventListener("click", closeProfileDialog);
+document.querySelector("#profileDialog").addEventListener("click", (event) => {
+  if (event.target.id === "profileDialog") closeProfileDialog();
+});
+document.querySelector("#profileName").addEventListener("input", (event) => {
+  event.target.setCustomValidity("");
+});
+document.querySelector("#profileForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const nameInput = document.querySelector("#profileName");
+  const name = nameInput.value.trim();
+  const duplicateName = profileOrder.some(
+    (profileId) => profileNames[profileId].toLocaleLowerCase() === name.toLocaleLowerCase()
+  );
+  if (duplicateName) {
+    nameInput.setCustomValidity("Choose a unique profile name.");
+    nameInput.reportValidity();
+    return;
+  }
+  if (!name) return;
+  if (createProfile(
+    name.slice(0, maxProfileNameLength),
+    profileDialogMode === "duplicate" ? profileDialogSource : null
+  )) {
+    event.target.reset();
+    closeProfileDialog();
+  }
+});
+
+document.querySelector("#customActionDialogClose").addEventListener("click", closeCustomActionDialog);
 document.querySelector("#customActionDialog").addEventListener("click", (event) => {
-  if (event.target.id === "customActionDialog") closeDialog();
+  if (event.target.id === "customActionDialog") closeCustomActionDialog();
 });
 document.querySelector("#customActionForm").addEventListener("submit", (event) => {
   event.preventDefault();
@@ -1500,7 +1748,7 @@ document.querySelector("#customActionForm").addEventListener("submit", (event) =
   assignAction(selectedIndex, id);
   renderActions();
   event.target.reset();
-  closeDialog();
+  closeCustomActionDialog();
 });
 
 document.querySelector("#deviceButton").addEventListener("click", async () => {
@@ -1665,8 +1913,7 @@ async function initializeNativeState() {
         pageLayouts[profile][pageIndex] = config.keys;
         currentPageByProfile[profile] = pageIndex;
         currentProfile = profile;
-        document.querySelector("#profileSelect").value = profile;
-        document.querySelector("#layoutTitle").textContent = profileNames[profile];
+        renderProfileOptions();
         persistPages();
       }
     } catch {
@@ -1692,13 +1939,15 @@ document.addEventListener("keydown", (event) => {
     if (event.shiftKey) redoButton.click();
     else undoButton.click();
   }
-  if (event.key === "Escape") closeDialog();
+  if (event.key === "Escape") {
+    closeCustomActionDialog();
+    closeProfileDialog();
+  }
 });
 
 renderBuildInfo();
 renderActions();
-document.querySelector("#profileSelect").value = currentProfile;
-document.querySelector("#layoutTitle").textContent = profileNames[currentProfile];
+renderProfileOptions();
 renderPageTabs();
 renderKeys();
 initializeNativeState();

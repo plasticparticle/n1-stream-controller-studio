@@ -68,12 +68,21 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>
             </button>
             <div class="profile-switcher">
-              <span>PROFILE</span>
-              <select id="profileSelect" aria-label="Active profile">
-                <option value="streaming">Live Stream</option>
-                <option value="editing">Video Edit</option>
-                <option value="desktop">Daily Desk</option>
-              </select>
+              <span class="profile-label">PROFILE</span>
+              <div class="profile-control-row">
+                <select id="profileSelect" aria-label="Active profile"></select>
+                <div class="profile-actions" aria-label="Profile actions">
+                  <button id="addProfileButton" type="button" title="Add profile" aria-label="Add profile">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+                  </button>
+                  <button id="duplicateProfileButton" type="button" title="Duplicate profile" aria-label="Duplicate current profile">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"></rect><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path></svg>
+                  </button>
+                  <button class="profile-delete" id="deleteProfileButton" type="button" title="Delete profile" aria-label="Delete current profile">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"></path></svg>
+                  </button>
+                </div>
+              </div>
             </div>
             <div class="history-actions" aria-label="Change history">
               <button id="undoButton" title="Undo (Ctrl+Z)" disabled>
@@ -438,7 +447,7 @@
 
     <div class="dialog-backdrop" id="customActionDialog" aria-hidden="true">
       <form class="dialog" id="customActionForm">
-        <button class="dialog-close" type="button" aria-label="Close dialog">
+        <button class="dialog-close" id="customActionDialogClose" type="button" aria-label="Close dialog">
           <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"></path></svg>
         </button>
         <p class="section-kicker">CUSTOM ACTION</p>
@@ -453,6 +462,22 @@
           <input id="customActionCommand" required placeholder="code ~/Development/project" />
         </label>
         <button class="primary-button dialog-submit" type="submit">Create & assign</button>
+      </form>
+    </div>
+
+    <div class="dialog-backdrop" id="profileDialog" aria-hidden="true">
+      <form class="dialog profile-dialog" id="profileForm" role="dialog" aria-modal="true" aria-labelledby="profileDialogTitle">
+        <button class="dialog-close" id="profileDialogClose" type="button" aria-label="Close dialog">
+          <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"></path></svg>
+        </button>
+        <p class="section-kicker" id="profileDialogKicker">NEW PROFILE</p>
+        <h2 id="profileDialogTitle">Create a profile</h2>
+        <p id="profileDialogDescription">Start with one empty page. You can add actions after creating it.</p>
+        <label>
+          Profile name
+          <input id="profileName" required maxlength="40" autocomplete="off" placeholder="My profile" />
+        </label>
+        <button class="primary-button dialog-submit" id="profileDialogSubmit" type="submit">Create profile</button>
       </form>
     </div>
 

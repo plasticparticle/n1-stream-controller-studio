@@ -258,23 +258,31 @@ svg {
 }
 
 .profile-switcher {
-  min-width: 145px;
+  width: 238px;
   height: 46px;
-  padding: 7px 12px;
+  padding: 6px 7px 6px 11px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: #121719;
 }
 
-.profile-switcher span {
+.profile-switcher .profile-label {
   display: block;
   color: var(--muted);
   font: 500 8px "DM Mono", monospace;
   letter-spacing: .12em;
 }
 
+.profile-control-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .profile-switcher select {
-  width: 100%;
+  min-width: 0;
+  flex: 1;
   margin-top: 2px;
   padding: 0;
   border: 0;
@@ -284,6 +292,48 @@ svg {
   color: var(--text);
   font-size: 11px;
   font-weight: 700;
+}
+
+.profile-actions {
+  display: flex;
+  gap: 2px;
+}
+
+.profile-actions button {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #788489;
+  transition: color .16s ease, background .16s ease;
+}
+
+.profile-actions button:hover,
+.profile-actions button:focus-visible {
+  outline: 0;
+  background: #20282b;
+  color: var(--text);
+}
+
+.profile-actions button.profile-delete:hover,
+.profile-actions button.profile-delete:focus-visible {
+  background: rgba(239,71,111,.12);
+  color: var(--danger);
+}
+
+.profile-actions button:disabled {
+  background: transparent;
+  color: #3f484c;
+  cursor: not-allowed;
+}
+
+.profile-actions svg {
+  width: 13px;
+  height: 13px;
 }
 
 .profile-switcher option,
