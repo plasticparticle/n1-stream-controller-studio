@@ -30,8 +30,8 @@ Good news! N1 Stream Controller Studio currently delivers:
 - Up to eight pages per profile, with physical profile and page switching
 - Full-screen, area, and window screenshots with save-or-copy-to-clipboard behavior
 - Sound buttons with waveforms, playheads, loops, restart/stop modes, and live playing colors
-- A 48-action AI palette for Codex, Claude, and Gemini
-- Live color-coded agent slots that show which CLI sessions are running
+- One reusable AI Session action plus ten focused AI workflows
+- Live color-coded session keys that show which CLI terminals are running
 - Safe action previewing without accidentally replacing a deck key
 - Native startup and USB-reconnect restoration, so the deck comes back without an editor nudge
 
@@ -87,37 +87,52 @@ Codex, Claude, and Gemini each receive a 15-key factory profile:
 
 | Profile row | Buttons |
 | --- | --- |
-| Session bank | Agent 1–5, each monitored separately |
+| Session bank | Model 1–5, each uniquely named and monitored |
 | Workflow row one | Resume, Plan, Build, Debug, Test |
 | Workflow row two | Review, Refactor, Explain, Docs, Ship Check |
 
-The dedicated **AI** catalogue contains 16 actions per CLI:
+The dedicated **AI** catalogue stays intentionally compact:
 
-- Five numbered, independently monitored session slots
-- One unnumbered new-session launcher
-- Ten focused workflow launchers
+- One reusable **AI Session** action
+- One copy of each of the ten focused workflows
 
-That is **48 AI actions** in total—because apparently the future needed inventory.
+Drop **AI Session** more than once and Studio assigns the lowest available model
+number automatically: `CLAUDE 1`, `CLAUDE 2`, and so on. The label is the session ID,
+so it must be unique. Duplicating a session key or an entire profile also assigns new
+numbers instead of cloning an identity.
 
-Numbered sessions open through the system-configured `x-terminal-emulator`. Studio
-gives each one a stable window title; pressing the same numbered key again focuses its
-existing terminal instead of manufacturing another window. `wmctrl` supplies window
+Every AI key has a model selector for Codex, Claude, or Gemini. Changing it updates the
+built-in provider icon and renumbers an automatically named session for the new model;
+an uploaded custom icon and a custom unique label stay untouched. The dedicated factory
+profiles remain preconfigured for their respective model.
+
+Sessions open through the system-configured `x-terminal-emulator`. Studio tags each
+terminal with its model, unique label, and project; pressing the same key again focuses
+that exact terminal instead of manufacturing another window. `wmctrl` supplies window
 activation and is recommended by the Debian package.
 
-Tagged sessions light their exact slot:
+Tagged sessions light their exact key:
 
 - Codex: electric blue
 - Claude: hot orange
 - Gemini: violet
 
-Only a numbered session whose Studio-tagged CLI process and terminal window are both
-still live illuminates its slot. Manually started and background CLI processes are
-ignored, so an unrelated Codex process cannot impersonate **Codex 1**. Status means
+Only a session whose Studio-tagged CLI process and terminal window are both still live
+illuminates its key. Manually started and background CLI processes are ignored, so an
+unrelated Codex process cannot impersonate **Codex 1**. Status means
 reliably **running** or **idle**; Studio does not pretend it can read an agent’s mind
 and guess whether it is thinking, waiting, or asking for approval.
 
 Built-in AI launchers use fixed arguments and do not require shell-action opt-in.
 Studio searches `PATH` plus common user installation directories for each CLI.
+
+Every Codex, Claude, and Gemini key can target its own project directory. Select an
+assigned AI key, open **Agent launcher → Project directory**, and either type an
+absolute path or choose a folder with the native picker. Studio validates and
+canonicalizes the directory before saving it, launches the terminal from that folder,
+and includes the project in session identity so one repository cannot steal
+focus—or borrow the running indicator—from another. Leaving the field empty uses the
+Studio project directory.
 
 ## Preview first, commit to the button later
 

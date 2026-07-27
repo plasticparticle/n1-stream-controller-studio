@@ -47,6 +47,7 @@ const backend = {
       key,
       action: {
         id: String(action?.id || ""),
+        title: String(action?.title || "").slice(0, 18),
         target: String(action?.command || action?.target || "").slice(0, 2048),
         soundId: sound?.id || null,
         soundName: sound?.name || null,
@@ -57,9 +58,16 @@ const backend = {
         screenshotClipboard: action?.screenshotClipboard === true,
         agent: action?.agent || null,
         agentWorkflow: action?.agentWorkflow || null,
-        agentSlot: Number(action?.agentSlot) || null
+        agentSlot: Number(action?.agentSlot) || null,
+        projectDirectory: action?.projectDirectory || null
       }
     });
+  },
+  validateProjectDirectory(directory) {
+    return this.invoke("validate_project_directory", { directory });
+  },
+  chooseProjectDirectory(initialDirectory = null) {
+    return this.invoke("choose_project_directory", { initialDirectory });
   },
   resolveAsset(assetId) {
     return this.invoke("resolve_asset", { assetId });
@@ -129,95 +137,113 @@ const actionCatalog = [
 
 const agentProfileIds = ["codex-cli", "claude-cli", "gemini-cli"];
 const agentWorkflowDefinitions = [
-  ["resume", "RESUME", "resume", "#38d996", "Continue the latest session"],
-  ["plan", "PLAN", "plan", "#e8ff58", "Plan the next change before editing"],
-  ["build", "BUILD", "build", "#37b7ff", "Build a requested feature"],
-  ["debug", "DEBUG", "bug", "#ef476f", "Diagnose and fix the current issue"],
-  ["test", "TEST", "test", "#a78bfa", "Run tests and repair failures"],
-  ["review", "REVIEW", "review", "#ff9f1c", "Review the current working tree"],
-  ["refactor", "REFACTOR", "refactor", "#38d996", "Refactor without changing behavior"],
-  ["explain", "EXPLAIN", "explain", "#37b7ff", "Explain the current codebase"],
-  ["docs", "DOCS", "docs", "#a78bfa", "Improve project documentation"],
-  ["ship", "SHIP CHECK", "ship", "#e8ff58", "Run final checks and prepare a handoff"]
+  ["resume", "RESUME", "#38d996", "Continue the latest session"],
+  ["plan", "PLAN", "#e8ff58", "Plan the next change before editing"],
+  ["build", "BUILD", "#37b7ff", "Build a requested feature"],
+  ["debug", "DEBUG", "#ef476f", "Diagnose and fix the current issue"],
+  ["test", "TEST", "#a78bfa", "Run tests and repair failures"],
+  ["review", "REVIEW", "#ff9f1c", "Review the current working tree"],
+  ["refactor", "REFACTOR", "#38d996", "Refactor without changing behavior"],
+  ["explain", "EXPLAIN", "#37b7ff", "Explain the current codebase"],
+  ["docs", "DOCS", "#a78bfa", "Improve project documentation"],
+  ["ship", "SHIP CHECK", "#e8ff58", "Run final checks and prepare a handoff"]
 ];
 
-const agentCatalogDefinitions = [
-  ["codex", "Codex", "codexAgent", "#37b7ff"],
-  ["claude", "Claude", "claudeAgent", "#ff9f1c"],
-  ["gemini", "Gemini", "geminiAgent", "#a78bfa"]
-];
+const agentDefinitions = {
+  codex: { label: "Codex", icon: "codexAgent", color: "#37b7ff" },
+  claude: { label: "Claude", icon: "claudeAgent", color: "#ff9f1c" },
+  gemini: { label: "Gemini", icon: "geminiAgent", color: "#a78bfa" }
+};
 
-agentCatalogDefinitions.forEach(([agent, label, agentIcon, agentColor]) => {
-  for (let slot = 1; slot <= 5; slot += 1) {
-    actionCatalog.push({
-      id: "ai-agent",
-      catalogId: `ai-${agent}-slot-${slot}`,
-      name: `${label} ${slot}`,
-      subtitle: `${label} CLI · Session slot ${slot}`,
-      description: `Focus ${label} slot ${slot}, or open it in the system terminal`,
-      agent,
-      agentWorkflow: "new",
-      agentMonitor: agent,
-      agentSlot: slot,
-      activeColor: agentColor,
-      idleColor: "#343c40",
-      icon: agentIcon,
-      color: "#343c40",
-      category: "ai",
-      group: `${label} CLI`
-    });
-  }
+function agentDefinition(agent) {
+  return agentDefinitions[agent] || agentDefinitions.codex;
+}
+
+function agentWorkflowDefinition(workflow) {
+  return agentWorkflowDefinitions.find(([id]) => id === workflow) || null;
+}
+
+function defaultAgentTitle(action, agent = action?.agent || "codex") {
+  const label = agentDefinition(agent).label.toUpperCase();
+  if (action?.agentWorkflow === "new") return `${label} 1`;
+  return agentWorkflowDefinition(action?.agentWorkflow)?.[1] || label;
+}
+
+function agentActionPresentation(action, agent, updateTitle = false) {
+  const definition = agentDefinition(agent);
+  const workflow = action?.agentWorkflow || "new";
+  const isSession = workflow === "new";
+  const workflowDefinition = agentWorkflowDefinition(workflow);
+  const workflowTitle = workflowDefinition?.[1] || "SESSION";
+  const description = isSession
+    ? `Focus this named ${definition.label} session, or open it in the system terminal`
+    : workflowDefinition?.[3] || action.description;
+  return {
+    agent,
+    agentMonitor: isSession ? agent : null,
+    activeColor: isSession ? definition.color : action.activeColor,
+    icon: definition.icon,
+    name: isSession ? `${definition.label} Session` : `${definition.label} ${workflowTitle}`,
+    subtitle: `${definition.label} CLI · ${isSession ? "Named session" : workflow}`,
+    description,
+    ...(updateTitle ? { title: defaultAgentTitle(action, agent) } : {})
+  };
+}
+
+actionCatalog.push({
+  id: "ai-agent",
+  catalogId: "ai-session",
+  name: "AI Session",
+  subtitle: "Choose a model · Auto-numbered",
+  description: "Open or focus a uniquely named AI session",
+  agent: "codex",
+  agentWorkflow: "new",
+  agentMonitor: "codex",
+  activeColor: agentDefinitions.codex.color,
+  idleColor: "#343c40",
+  icon: agentDefinitions.codex.icon,
+  color: "#343c40",
+  category: "ai",
+  group: "AI Sessions"
+});
+agentWorkflowDefinitions.forEach(([workflow, title, color, description]) => {
   actionCatalog.push({
     id: "ai-agent",
-    catalogId: `ai-${agent}-new`,
-    name: `New ${label} Session`,
-    subtitle: `${label} CLI · new`,
-    description: `Open ${label} in the system terminal`,
-    agent,
-    agentWorkflow: "new",
-    icon: agentIcon,
-    color: agentColor,
+    catalogId: `ai-${workflow}`,
+    name: title,
+    subtitle: `AI workflow · ${workflow}`,
+    description,
+    agent: "codex",
+    agentWorkflow: workflow,
+    icon: agentDefinitions.codex.icon,
+    color,
     category: "ai",
-    group: `${label} CLI`
-  });
-  agentWorkflowDefinitions.forEach(([workflow, title, icon, color, description]) => {
-    actionCatalog.push({
-      id: "ai-agent",
-      catalogId: `ai-${agent}-${workflow}`,
-      name: `${label} ${title}`,
-      subtitle: `${label} CLI · ${workflow}`,
-      description,
-      agent,
-      agentWorkflow: workflow,
-      icon,
-      color,
-      category: "ai",
-      group: `${label} CLI`
-    });
+    group: "AI Workflows"
   });
 });
 
-function agentProfileLayout(agent, label, icon, activeColor) {
+function agentProfileLayout(agent) {
+  const definition = agentDefinition(agent);
+  const label = definition.label.toUpperCase();
   const idleColor = "#343c40";
   const slots = Array.from({ length: 5 }, (_, index) => [
     "ai-agent",
     `${label} ${index + 1}`,
     idleColor,
     {
-      name: `New ${label} Agent`,
-      subtitle: `${label} CLI · Session slot ${index + 1}`,
-      description: `Focus ${label} slot ${index + 1}, or open it in the system terminal`,
+      name: `${definition.label} Session`,
+      subtitle: `${definition.label} CLI · Named session`,
+      description: `Focus this named ${definition.label} session, or open it in the system terminal`,
       agent,
       agentWorkflow: "new",
       agentMonitor: agent,
-      agentSlot: index + 1,
-      activeColor,
+      activeColor: definition.color,
       idleColor,
-      icon
+      icon: definition.icon
     }
   ]);
   const workflows = agentWorkflowDefinitions.map(
-    ([workflow, title, workflowIcon, color, description]) => [
+    ([workflow, title, color, description]) => [
       "ai-agent",
       title,
       color,
@@ -227,7 +253,7 @@ function agentProfileLayout(agent, label, icon, activeColor) {
         description,
         agent,
         agentWorkflow: workflow,
-        icon: workflowIcon
+        icon: definition.icon
       }
     ]
   );
@@ -250,9 +276,9 @@ const layouts = {
     ["website", "CALENDAR", "#a78bfa"], ["music", "MUSIC", "#38d996"], ["volume", "VOLUME", "#37b7ff"], ["screenshot-full", "SCREENSHOT", "#e8ff58"], ["command", "UPDATES", "#ff9f1c"],
     null, null, null, null, null
   ],
-  "codex-cli": agentProfileLayout("codex", "CODEX", "codexAgent", "#37b7ff"),
-  "claude-cli": agentProfileLayout("claude", "CLAUDE", "claudeAgent", "#ff9f1c"),
-  "gemini-cli": agentProfileLayout("gemini", "GEMINI", "geminiAgent", "#a78bfa")
+  "codex-cli": agentProfileLayout("codex"),
+  "claude-cli": agentProfileLayout("claude"),
+  "gemini-cli": agentProfileLayout("gemini")
 };
 
 const profileNames = {
@@ -302,9 +328,9 @@ const soundPlaybackStates = new Map();
 const soundPlaybackByKey = new Map();
 const agentHardwareStates = new Map();
 const agentStatuses = new Map([
-  ["codex", { count: 0, slots: new Set() }],
-  ["claude", { count: 0, slots: new Set() }],
-  ["gemini", { count: 0, slots: new Set() }]
+  ["codex", { count: 0, slots: new Set(), sessions: new Set() }],
+  ["claude", { count: 0, slots: new Set(), sessions: new Set() }],
+  ["gemini", { count: 0, slots: new Set(), sessions: new Set() }]
 ]);
 
 const keyGrid = document.querySelector("#keyGrid");
@@ -340,13 +366,7 @@ function createKeyData(tuple) {
   const matchedAction = tuple[0] === "ai-agent"
     ? actionCatalog.find((item) =>
       item.id === "ai-agent"
-      && item.agent === overrides.agent
       && item.agentWorkflow === overrides.agentWorkflow
-      && (
-        overrides.agentSlot
-          ? item.agentSlot === overrides.agentSlot
-          : !item.agentSlot
-      )
     )
     : actionCatalog.find((item) => item.id === tuple[0]);
   const { catalogId: _catalogId, ...action } = matchedAction || actionCatalog[0];
@@ -477,6 +497,7 @@ if (!profileOrder.length) {
 }
 
 if (!pageLayouts[currentProfile]) currentProfile = profileOrder[0];
+normalizeStoredAgentActions();
 
 function activePageIndex(profile = currentProfile) {
   return currentPageByProfile[profile] || 0;
@@ -587,7 +608,7 @@ function createProfile(name, duplicateProfileId = null) {
   const profileId = createProfileId();
   const sourcePages = duplicateProfileId ? pageLayouts[duplicateProfileId] : null;
   pageLayouts[profileId] = sourcePages
-    ? structuredClone(sourcePages)
+    ? uniquelyNumberAgentSessions(structuredClone(sourcePages))
     : [Array(15).fill(null)];
   currentPageByProfile[profileId] = sourcePages
     ? activePageIndex(duplicateProfileId)
@@ -810,16 +831,26 @@ function soundWaveformMarkup(sound, playback) {
 }
 
 function agentStatusFor(agent) {
-  return agentStatuses.get(agent) || { count: 0, slots: new Set() };
+  return agentStatuses.get(agent) || {
+    count: 0,
+    slots: new Set(),
+    sessions: new Set()
+  };
+}
+
+function agentSessionKey(label, projectDirectory = "") {
+  return `${String(label || "").trim().toLocaleLowerCase()}\u0000${String(projectDirectory || "")}`;
 }
 
 function agentKeyIsActive(key) {
   if (!key?.agentMonitor) return false;
   const status = agentStatusFor(key.agentMonitor);
-  const slot = Number(key.agentSlot);
-  return Number.isInteger(slot) && slot > 0
-    ? status.slots.has(slot)
-    : status.count > 0;
+  if (!isAgentSession(key)) return status.count > 0;
+  if (status.sessions.size) {
+    return status.sessions.has(agentSessionKey(key.title, key.projectDirectory));
+  }
+  const legacySlot = Number(key.agentSlot);
+  return Number.isInteger(legacySlot) && status.slots.has(legacySlot);
 }
 
 function agentVisualKey(key) {
@@ -845,11 +876,21 @@ function updateAgentStatuses(statuses) {
         .map(Number)
         .filter((slot) => Number.isInteger(slot) && slot >= 1 && slot <= 5)
     );
+    const sessions = new Set(
+      (Array.isArray(next.sessions) ? next.sessions : [])
+        .map((session) => {
+          const label = String(session?.label || "").trim();
+          return label ? agentSessionKey(label, session?.projectDirectory) : null;
+        })
+        .filter(Boolean)
+    );
     const previous = agentStatusFor(agent);
     const slotsChanged = slots.size !== previous.slots.size
       || [...slots].some((slot) => !previous.slots.has(slot));
-    if (count !== previous.count || slotsChanged) changed = true;
-    agentStatuses.set(agent, { count, slots });
+    const sessionsChanged = sessions.size !== previous.sessions.size
+      || [...sessions].some((session) => !previous.sessions.has(session));
+    if (count !== previous.count || slotsChanged || sessionsChanged) changed = true;
+    agentStatuses.set(agent, { count, slots, sessions });
   }
   if (!changed) return;
   renderKeys();
@@ -1233,6 +1274,7 @@ function updateInspector() {
     : hasSelection ? "SELECTED KEY" : "NO KEY SELECTED";
   keyTitle.value = key?.title || "";
   keyTitle.disabled = !assignedKey;
+  keyTitle.setCustomValidity("");
   document.querySelector("#titleCount").textContent = `${keyTitle.value.length}/18`;
   miniKey.innerHTML = keyScreenMarkup(
     key,
@@ -1292,7 +1334,7 @@ function updateInspector() {
     const status = agentStatusFor(agent);
     const agentLabel = { codex: "Codex", claude: "Claude", gemini: "Gemini" }[agent] || "AI";
     const workflowLabel = {
-      new: "New terminal session",
+      new: "Named AI session",
       resume: "Continue latest session",
       plan: "Plan before editing",
       build: "Build a feature",
@@ -1304,17 +1346,41 @@ function updateInspector() {
       docs: "Improve documentation",
       ship: "Final ship check"
     }[key.agentWorkflow] || "Agent workflow";
-    const agentColor = safeColor(key.activeColor, key.color);
+    const definition = agentDefinition(agent);
+    const agentColor = definition.color;
     agentSettings.style.setProperty("--agent-color", agentColor);
-    document.querySelector("#agentRuntimeIcon").innerHTML = iconMarkup(key.icon);
+    document.querySelector("#agentRuntimeIcon").innerHTML = iconMarkup(definition.icon);
     document.querySelector("#agentRuntimeName").textContent = `${agentLabel} CLI`;
     document.querySelector("#agentWorkflowName").textContent = workflowLabel;
     const statusElement = document.querySelector("#agentRuntimeStatus");
     statusElement.textContent = status.count ? `RUNNING ${status.count}` : "IDLE";
     statusElement.dataset.state = status.count ? "running" : "idle";
-    document.querySelector("#agentRuntimeNote").textContent = key.agentSlot
-      ? `Slot ${key.agentSlot} lights while running; press it again to focus its terminal.`
+    document.querySelector("#agentRuntimeNote").textContent = isAgentSession(key)
+      ? `“${key.title}” is this session’s unique ID; press it again to focus its terminal.`
       : "Opens safely in the system-configured Linux terminal.";
+    document.querySelectorAll("[data-agent-model]").forEach((button) => {
+      const buttonAgent = button.dataset.agentModel;
+      const buttonDefinition = agentDefinition(buttonAgent);
+      button.style.setProperty("--model-color", buttonDefinition.color);
+      button.querySelector(".agent-model-glyph").innerHTML = iconMarkup(buttonDefinition.icon);
+      button.classList.toggle("active", buttonAgent === agent);
+      button.setAttribute("aria-checked", String(buttonAgent === agent));
+      button.disabled = !assignedKey;
+    });
+    const projectDirectory = String(key.projectDirectory || "");
+    const projectInput = document.querySelector("#agentProjectDirectory");
+    const projectField = document.querySelector("#agentProjectField");
+    projectInput.value = projectDirectory;
+    projectInput.disabled = !assignedKey;
+    document.querySelector("#chooseAgentProject").disabled = !assignedKey;
+    document.querySelector("#clearAgentProject").disabled =
+      !assignedKey || !projectDirectory;
+    projectField.classList.remove("invalid", "picking");
+    const projectNote = document.querySelector("#agentProjectNote");
+    projectNote.classList.remove("error");
+    projectNote.textContent = projectDirectory
+      ? "This button opens the agent with this folder as its working project."
+      : "Empty uses the Studio project directory.";
   }
   const screenshotClipboardToggle = document.querySelector("#screenshotClipboardToggle");
   screenshotClipboardToggle.checked = key?.screenshotClipboard === true;
@@ -1448,9 +1514,14 @@ function handleKeyClick(index) {
   let duplicated = false;
   if (duplicateSource !== null && duplicateSource !== index) {
     snapshot();
-    activeLayout()[index] = activeLayout()[duplicateSource]
+    const duplicate = activeLayout()[duplicateSource]
       ? structuredClone(activeLayout()[duplicateSource])
       : null;
+    if (isAgentSession(duplicate)) {
+      duplicate.title = nextAgentSessionTitle(duplicate.agent, activeLayout()[index]);
+      delete duplicate.agentSlot;
+    }
+    activeLayout()[index] = duplicate;
     duplicateSource = null;
     duplicated = true;
     requestDeviceSync();
@@ -1463,9 +1534,86 @@ function handleKeyClick(index) {
   if (!duplicated) void previewSoundKey(index);
 }
 
-function configuredCatalogAction(action, includeCatalogId = false) {
-  const { catalogId, ...assignedAction } = action;
+function isAgentSession(action) {
+  return action?.id === "ai-agent" && action.agentWorkflow === "new";
+}
+
+function agentForProfile(profile = currentProfile) {
   return {
+    "codex-cli": "codex",
+    "claude-cli": "claude",
+    "gemini-cli": "gemini"
+  }[profile] || "codex";
+}
+
+function agentSessionTitleExists(title, ignoredKey = null, reservedTitles = null) {
+  const normalized = String(title || "").trim().toLocaleLowerCase();
+  if (!normalized) return false;
+  if (reservedTitles?.has(normalized)) return true;
+  return Object.values(pageLayouts).some((pages) =>
+    pages.some((page) =>
+      page.some((key) =>
+        key !== ignoredKey
+        && isAgentSession(key)
+        && String(key.title || "").trim().toLocaleLowerCase() === normalized
+      )
+    )
+  );
+}
+
+function nextAgentSessionTitle(agent, ignoredKey = null, reservedTitles = null) {
+  const label = agentDefinition(agent).label.toUpperCase();
+  let number = 1;
+  while (agentSessionTitleExists(`${label} ${number}`, ignoredKey, reservedTitles)) number += 1;
+  return `${label} ${number}`;
+}
+
+function normalizeStoredAgentActions() {
+  const usedSessionTitles = new Set();
+  profileOrder.forEach((profile) => {
+    pageLayouts[profile]?.forEach((page) => {
+      page.forEach((key) => {
+        if (key?.id !== "ai-agent") return;
+        const agent = agentDefinitions[key.agent] ? key.agent : agentForProfile(profile);
+        Object.assign(key, agentActionPresentation(key, agent));
+        if (!isAgentSession(key)) return;
+        const title = String(key.title || "").trim();
+        const normalizedTitle = title.toLocaleLowerCase();
+        const invalidTitle = (
+          !title
+          || title.length > 18
+          || /[\u0000-\u001f\u007f]/.test(title)
+          || usedSessionTitles.has(normalizedTitle)
+        );
+        if (invalidTitle) {
+          key.title = nextAgentSessionTitle(agent, key, usedSessionTitles);
+        }
+        usedSessionTitles.add(key.title.trim().toLocaleLowerCase());
+      });
+    });
+  });
+}
+
+function uniquelyNumberAgentSessions(pages) {
+  const reservedTitles = new Set();
+  pages.forEach((page) => {
+    page.forEach((key) => {
+      if (!isAgentSession(key)) return;
+      key.title = nextAgentSessionTitle(key.agent, null, reservedTitles);
+      reservedTitles.add(key.title.toLocaleLowerCase());
+      delete key.agentSlot;
+    });
+  });
+  return pages;
+}
+
+function hasAutomaticAgentSessionTitle(action) {
+  return /^(CODEX|CLAUDE|GEMINI) [1-9]\d*$/i.test(String(action?.title || "").trim());
+}
+
+function configuredCatalogAction(action, includeCatalogId = false, ignoredKey = null) {
+  const { catalogId, ...assignedAction } = action;
+  let configured = {
     ...assignedAction,
     ...(includeCatalogId && catalogId ? { catalogId } : {}),
     title: action.name.toUpperCase().slice(0, 18),
@@ -1473,6 +1621,17 @@ function configuredCatalogAction(action, includeCatalogId = false) {
     visualBehavior: "momentary",
     visuals: { primary: null, secondary: null }
   };
+  if (configured.id === "ai-agent") {
+    const agent = agentForProfile();
+    configured = {
+      ...configured,
+      ...agentActionPresentation(configured, agent),
+      title: isAgentSession(configured)
+        ? nextAgentSessionTitle(agent, ignoredKey)
+        : defaultAgentTitle(configured, agent)
+    };
+  }
+  return configured;
 }
 
 function previewCatalogAction(actionId) {
@@ -1502,7 +1661,7 @@ function assignAction(index, actionId) {
     return;
   }
   snapshot();
-  activeLayout()[index] = configuredCatalogAction(action);
+  activeLayout()[index] = configuredCatalogAction(action, false, activeLayout()[index]);
   setRuntimeVisualState(index, false);
   selectedIndex = index;
   catalogPreviewAction = null;
@@ -1699,10 +1858,27 @@ keyTitle.addEventListener("input", () => {
   document.querySelector("#titleCount").textContent = `${keyTitle.value.length}/18`;
   const key = activeLayout()[selectedIndex];
   if (!key) return;
+  if (isAgentSession(key)) {
+    const title = keyTitle.value.trim();
+    if (!title) {
+      keyTitle.setCustomValidity("AI sessions need a unique label.");
+      return;
+    }
+    if (agentSessionTitleExists(title, key)) {
+      keyTitle.setCustomValidity("AI session labels must be unique.");
+      return;
+    }
+  }
+  keyTitle.setCustomValidity("");
   key.title = keyTitle.value;
   const screenLabel = keyGrid.children[selectedIndex]?.querySelector(".key-label");
   if (screenLabel) screenLabel.textContent = keyTitle.value;
   requestDeviceSync();
+});
+keyTitle.addEventListener("change", () => {
+  if (keyTitle.checkValidity()) return;
+  keyTitle.reportValidity();
+  showToast("Unique session label required", keyTitle.validationMessage);
 });
 
 document.querySelectorAll("#colorRow button").forEach((button) => {
@@ -1714,7 +1890,7 @@ document.querySelector("#autoColorButton").addEventListener("click", () => {
   if (!key) return;
   const catalogAction = actionCatalog.find((item) =>
     item.id === key.id
-    && (!key.agent || item.agent === key.agent)
+    && (key.id === "ai-agent" || !key.agent || item.agent === key.agent)
     && (!key.agentWorkflow || item.agentWorkflow === key.agentWorkflow)
   );
   updateKey({ color: catalogAction?.color || "#37b7ff" });
@@ -1843,6 +2019,104 @@ document.querySelector("#actionValue").addEventListener("change", (event) => {
   const value = event.target.value.trim();
   const usesShellCommand = ["launch", "command", "hotkey"].includes(key.id) || key.id?.startsWith("custom-");
   updateKey(usesShellCommand ? { target: value, command: value, description: value } : { target: value, description: value });
+});
+
+function selectedAgentKey() {
+  const key = activeLayout()?.[selectedIndex];
+  return key?.id === "ai-agent" ? key : null;
+}
+
+document.querySelectorAll("[data-agent-model]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const key = selectedAgentKey();
+    const agent = button.dataset.agentModel;
+    if (!key || !agentDefinitions[agent] || key.agent === agent) return;
+    const shouldRenumber = isAgentSession(key) && hasAutomaticAgentSessionTitle(key);
+    const nextTitle = shouldRenumber ? nextAgentSessionTitle(agent, key) : null;
+    updateKey({
+      ...agentActionPresentation(key, agent),
+      ...(nextTitle ? { title: nextTitle } : {})
+    });
+    showToast(
+      `${agentDefinition(agent).label} selected`,
+      nextTitle
+        ? `This session is now ${nextTitle}.`
+        : "The AI model and default icon have been updated."
+    );
+  });
+});
+
+function showAgentProjectError(message) {
+  document.querySelector("#agentProjectField").classList.add("invalid");
+  const note = document.querySelector("#agentProjectNote");
+  note.textContent = message;
+  note.classList.add("error");
+}
+
+async function saveAgentProjectDirectory(directory) {
+  const key = selectedAgentKey();
+  if (!key) return;
+  const value = String(directory || "").trim();
+  if (!value) {
+    updateKey({ projectDirectory: null });
+    showToast("Studio project selected", "This AI button now uses Studio’s default project directory.");
+    return;
+  }
+  try {
+    const normalized = await backend.validateProjectDirectory(value);
+    if (selectedAgentKey() !== key) return;
+    updateKey({ projectDirectory: normalized });
+    showToast("AI project selected", normalized);
+  } catch (error) {
+    showAgentProjectError(
+      error?.message || String(error || "Choose an existing project directory.")
+    );
+  }
+}
+
+const agentProjectInput = document.querySelector("#agentProjectDirectory");
+agentProjectInput.addEventListener("input", () => {
+  document.querySelector("#agentProjectField").classList.remove("invalid");
+  const note = document.querySelector("#agentProjectNote");
+  note.classList.remove("error");
+  note.textContent = "Press Enter to validate this path, or choose a folder.";
+});
+agentProjectInput.addEventListener("change", (event) => {
+  void saveAgentProjectDirectory(event.target.value);
+});
+agentProjectInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    event.currentTarget.blur();
+  }
+});
+
+document.querySelector("#chooseAgentProject").addEventListener("click", async () => {
+  const key = selectedAgentKey();
+  if (!key) return;
+  const field = document.querySelector("#agentProjectField");
+  const button = document.querySelector("#chooseAgentProject");
+  field.classList.remove("invalid");
+  field.classList.add("picking");
+  button.disabled = true;
+  try {
+    const directory = await backend.chooseProjectDirectory(key.projectDirectory || null);
+    if (!directory || selectedAgentKey() !== key) return;
+    updateKey({ projectDirectory: directory });
+    showToast("AI project selected", directory);
+  } catch (error) {
+    showAgentProjectError(
+      error?.message || String(error || "The project folder picker could not be opened.")
+    );
+  } finally {
+    field.classList.remove("picking");
+    if (selectedAgentKey() === key) button.disabled = false;
+  }
+});
+
+document.querySelector("#clearAgentProject").addEventListener("click", () => {
+  if (!selectedAgentKey()) return;
+  void saveAgentProjectDirectory("");
 });
 
 document.querySelector("#chooseSoundFile").addEventListener("click", () => {

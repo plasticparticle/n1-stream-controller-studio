@@ -2,7 +2,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 #[cfg(unix)]
@@ -64,6 +64,7 @@ struct ActiveSound {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TestActionInput {
     id: String,
+    title: Option<String>,
     target: Option<String>,
     sound_id: Option<String>,
     sound_name: Option<String>,
@@ -75,12 +76,14 @@ struct TestActionInput {
     agent: Option<String>,
     agent_workflow: Option<String>,
     agent_slot: Option<u8>,
+    project_directory: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct AgentProcessStatus {
     count: u64,
     slots: BTreeSet<u8>,
+    sessions: BTreeSet<(String, String)>,
 }
 
 struct AppCore {
@@ -130,11 +133,26 @@ fn agent_statuses_json(statuses: &HashMap<String, AgentProcessStatus>) -> Value 
             .iter()
             .map(|agent| {
                 let status = statuses.get(*agent).cloned().unwrap_or_default();
+                let sessions = status
+                    .sessions
+                    .into_iter()
+                    .map(|(label, project_directory)| {
+                        json!({
+                            "label": label,
+                            "projectDirectory": if project_directory.is_empty() {
+                                Value::Null
+                            } else {
+                                Value::String(project_directory)
+                            }
+                        })
+                    })
+                    .collect::<Vec<_>>();
                 (
                     (*agent).to_string(),
                     json!({
                         "count": status.count,
-                        "slots": status.slots.into_iter().collect::<Vec<_>>()
+                        "slots": status.slots.into_iter().collect::<Vec<_>>(),
+                        "sessions": sessions
                     }),
                 )
             })
@@ -891,7 +909,12 @@ impl AppCore {
         let is_sound = action.get("id").and_then(Value::as_str) == Some("sound");
         let is_screenshot = screenshot_kind(action).is_some();
         let is_agent = action.get("id").and_then(Value::as_str) == Some("ai-agent");
-        if is_agent && focus_agent_terminal(action) {
+        let agent_project_directory = if is_agent {
+            configured_agent_project_directory(action)?
+        } else {
+            None
+        };
+        if is_agent && focus_agent_terminal(action, agent_project_directory.as_deref()) {
             self.emit(json!({
                 "event": "action",
                 "ok": true,
@@ -932,7 +955,7 @@ impl AppCore {
         } else if is_screenshot {
             self.resolve_screenshot_commands(action)
         } else if is_agent {
-            resolve_agent_commands(action)
+            resolve_agent_commands(action, agent_project_directory.as_deref())
         } else if is_shell_action(action) && !self.allow_shell_actions {
             Err(format!(
                 "Shell actions are disabled. Set {SHELL_ACTION_OPT_IN}=1 before starting Studio to opt in."
@@ -972,7 +995,10 @@ impl AppCore {
                 ));
                 continue;
             }
-            match spawn_resolved_action(&resolved, &self.project_root) {
+            let working_directory = agent_project_directory
+                .as_deref()
+                .unwrap_or(&self.project_root);
+            match spawn_resolved_action(&resolved, working_directory) {
                 Ok(child) => {
                     if is_sound {
                         let playback_id = child.id();
@@ -1443,6 +1469,71 @@ fn trusted_program_path(program: &str) -> std::io::Result<PathBuf> {
         })
 }
 
+fn choose_project_directory_native(
+    initial_directory: Option<&str>,
+) -> Result<Option<String>, String> {
+    let initial = initial_directory
+        .and_then(|directory| validated_project_directory(directory).ok())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .filter(|directory| directory.is_dir())
+        });
+
+    let (program, args) = if let Ok(program) = trusted_program_path("zenity") {
+        let mut args = vec![
+            "--file-selection".to_string(),
+            "--directory".to_string(),
+            "--title=Choose AI project directory".to_string(),
+        ];
+        if let Some(initial) = initial.as_ref() {
+            args.push(format!("--filename={}/", initial.display()));
+        }
+        (program, args)
+    } else if let Ok(program) = trusted_program_path("kdialog") {
+        let mut args = vec!["--getexistingdirectory".to_string()];
+        if let Some(initial) = initial.as_ref() {
+            args.push(initial.to_string_lossy().into_owned());
+        }
+        args.extend([
+            "--title".to_string(),
+            "Choose AI project directory".to_string(),
+        ]);
+        (program, args)
+    } else {
+        return Err("No supported folder picker is installed (install zenity or kdialog)".into());
+    };
+
+    let output = Command::new(program)
+        .args(args)
+        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .env_remove("BASH_ENV")
+        .env_remove("CDPATH")
+        .env_remove("ENV")
+        .env_remove("SHELLOPTS")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(error_text)?;
+    if !output.status.success() {
+        return if output.status.code() == Some(1) {
+            Ok(None)
+        } else {
+            Err("The project folder picker could not be opened".into())
+        };
+    }
+
+    let selected = String::from_utf8(output.stdout)
+        .map_err(|_| "The selected project path is not valid UTF-8".to_string())?;
+    let selected = validated_project_directory(selected.trim())?;
+    Ok(Some(
+        selected
+            .to_str()
+            .expect("validated project paths are UTF-8")
+            .to_string(),
+    ))
+}
+
 fn is_executable(path: &Path) -> bool {
     let Ok(metadata) = path.metadata() else {
         return false;
@@ -1639,38 +1730,65 @@ fn find_agent_executable(agent: &str) -> Option<PathBuf> {
     })
 }
 
-fn agent_terminal_title(action: &Value) -> Option<String> {
-    let agent = action.get("agent").and_then(Value::as_str)?;
+fn agent_session_label(action: &Value) -> Option<&str> {
     let workflow = action.get("agentWorkflow").and_then(Value::as_str)?;
-    let slot = action.get("agentSlot").and_then(Value::as_u64)?;
-    if !AI_AGENTS.contains(&agent) || workflow != "new" || !(1..=5).contains(&slot) {
+    if workflow != "new" {
         return None;
     }
-    Some(format!("N1 Studio - {} {slot}", agent.to_uppercase()))
+    action
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|title| {
+            !title.is_empty() && title.chars().count() <= 18 && !title.chars().any(char::is_control)
+        })
 }
 
-fn focus_agent_terminal(action: &Value) -> bool {
-    let Some(title) = agent_terminal_title(action) else {
+fn agent_terminal_title(action: &Value) -> Option<String> {
+    let agent = action.get("agent").and_then(Value::as_str)?;
+    if !AI_AGENTS.contains(&agent) {
+        return None;
+    }
+    let session = agent_session_label(action)?;
+    let project = action
+        .get("projectDirectory")
+        .and_then(Value::as_str)
+        .map(Path::new)
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty());
+    Some(match project {
+        Some(project) => format!("N1 Studio - {session} · {project}"),
+        None => format!("N1 Studio - {session}"),
+    })
+}
+
+fn focus_agent_terminal(action: &Value, project_directory: Option<&Path>) -> bool {
+    if agent_terminal_title(action).is_none() {
         return false;
-    };
+    }
     let Ok(program) = trusted_program_path("wmctrl") else {
         return false;
     };
-    if run_wmctrl(&program, &["-a", &title]) {
-        return true;
-    }
     let Some(agent) = action.get("agent").and_then(Value::as_str) else {
         return false;
     };
-    let Some(slot) = action
-        .get("agentSlot")
-        .and_then(Value::as_u64)
-        .and_then(|slot| u8::try_from(slot).ok())
-    else {
+    let Some(session) = agent_session_label(action) else {
         return false;
     };
+    let legacy_slot = action
+        .get("agentSlot")
+        .and_then(Value::as_u64)
+        .and_then(|slot| u8::try_from(slot).ok());
     let windows = visible_windows();
-    let Some(window_id) = tagged_agent_window_id(Path::new("/proc"), &windows, agent, slot) else {
+    let Some(window_id) = tagged_agent_window_id(
+        Path::new("/proc"),
+        &windows,
+        agent,
+        session,
+        legacy_slot,
+        project_directory,
+    ) else {
         return false;
     };
     run_wmctrl(&program, &["-i", "-a", &window_id])
@@ -1705,7 +1823,10 @@ fn is_user_executable(path: &Path) -> bool {
     }
 }
 
-fn resolve_agent_commands(action: &Value) -> Result<Vec<ResolvedAction>, String> {
+fn resolve_agent_commands(
+    action: &Value,
+    project_directory: Option<&Path>,
+) -> Result<Vec<ResolvedAction>, String> {
     validate_agent_action(action)?;
     let agent = action
         .get("agent")
@@ -1723,8 +1844,17 @@ fn resolve_agent_commands(action: &Value) -> Result<Vec<ResolvedAction>, String>
         env_program.to_string_lossy().into_owned(),
         format!("N1_STREAMCTRL_AGENT={agent}"),
     ];
+    if let Some(session) = agent_session_label(action) {
+        launch.push(format!("N1_STREAMCTRL_SESSION={session}"));
+    }
     if let Some(slot) = action.get("agentSlot").and_then(Value::as_u64) {
         launch.push(format!("N1_STREAMCTRL_SLOT={slot}"));
+    }
+    if let Some(directory) = project_directory {
+        launch.push(format!(
+            "N1_STREAMCTRL_PROJECT={}",
+            directory.to_string_lossy()
+        ));
     }
     launch.push(executable.to_string_lossy().into_owned());
     launch.extend(agent_cli_args(agent, workflow));
@@ -1787,6 +1917,17 @@ fn tagged_agent_slot(agent: &str, environ: &[u8]) -> Option<u8> {
     process_environment_value(environ, "N1_STREAMCTRL_SLOT")
         .and_then(|slot| slot.parse::<u8>().ok())
         .filter(|slot| (1..=5).contains(slot))
+}
+
+fn tagged_agent_session(agent: &str, environ: &[u8]) -> Option<String> {
+    if environ.len() > 1_048_576
+        || process_environment_value(environ, "N1_STREAMCTRL_AGENT").as_deref() != Some(agent)
+    {
+        return None;
+    }
+    process_environment_value(environ, "N1_STREAMCTRL_SESSION")
+        .map(|session| session.trim().to_string())
+        .filter(|session| !session.is_empty() && session.chars().count() <= 18)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1875,7 +2016,9 @@ fn tagged_agent_window_id(
     proc_root: &Path,
     windows: &[VisibleWindow],
     expected_agent: &str,
-    expected_slot: u8,
+    expected_session: &str,
+    expected_legacy_slot: Option<u8>,
+    expected_project: Option<&Path>,
 ) -> Option<String> {
     for entry in fs::read_dir(proc_root).into_iter().flatten().flatten() {
         let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
@@ -1891,7 +2034,18 @@ fn tagged_agent_window_id(
         let Ok(environ) = fs::read(path.join("environ")) else {
             continue;
         };
-        if tagged_agent_slot(expected_agent, &environ) != Some(expected_slot) {
+        let tagged_session = tagged_agent_session(expected_agent, &environ);
+        let session_matches = tagged_session
+            .as_deref()
+            .is_some_and(|session| session.eq_ignore_ascii_case(expected_session))
+            || (tagged_session.is_none()
+                && expected_legacy_slot.is_some()
+                && tagged_agent_slot(expected_agent, &environ) == expected_legacy_slot);
+        if !session_matches {
+            continue;
+        }
+        let tagged_project = process_environment_value(&environ, "N1_STREAMCTRL_PROJECT");
+        if tagged_project.as_deref().map(Path::new) != expected_project {
             continue;
         }
         if let Some(window_id) = visible_window_id_for_process(proc_root, windows, pid) {
@@ -1931,20 +2085,28 @@ fn scan_agent_processes(
         let Ok(environ) = fs::read(path.join("environ")) else {
             continue;
         };
-        let Some(slot) = tagged_agent_slot(agent, &environ) else {
+        let legacy_slot = tagged_agent_slot(agent, &environ);
+        let Some(session) = tagged_agent_session(agent, &environ)
+            .or_else(|| legacy_slot.map(|slot| format!("{} {slot}", agent.to_uppercase())))
+        else {
             continue;
         };
         if visible_window_id_for_process(proc_root, windows, pid).is_none() {
             continue;
         }
-        statuses
+        let status = statuses
             .get_mut(agent)
-            .expect("known agents are initialized")
-            .slots
-            .insert(slot);
+            .expect("known agents are initialized");
+        if let Some(slot) = legacy_slot {
+            status.slots.insert(slot);
+        }
+        status.sessions.insert((
+            session,
+            process_environment_value(&environ, "N1_STREAMCTRL_PROJECT").unwrap_or_default(),
+        ));
     }
     for status in statuses.values_mut() {
-        status.count = status.slots.len() as u64;
+        status.count = status.sessions.len() as u64;
     }
     statuses
 }
@@ -2111,11 +2273,15 @@ fn validated_test_action(input: TestActionInput) -> Result<Value, String> {
         "screenshotClipboard": input.screenshot_clipboard.unwrap_or(false)
     });
     if is_agent {
+        action["title"] = Value::String(input.title.unwrap_or_default());
         action["agent"] = Value::String(input.agent.unwrap_or_else(|| "codex".into()));
         action["agentWorkflow"] =
             Value::String(input.agent_workflow.unwrap_or_else(|| "new".into()));
         if let Some(slot) = input.agent_slot {
             action["agentSlot"] = json!(slot);
+        }
+        if let Some(directory) = input.project_directory {
+            action["projectDirectory"] = Value::String(directory);
         }
         validate_agent_action(&action)?;
     }
@@ -2180,6 +2346,7 @@ fn validate_sync_payload(payload: &Value) -> Result<(), String> {
     if keys.len() != 15 {
         return Err("Sync payload must contain exactly 15 keys".into());
     }
+    let mut agent_session_labels = HashSet::new();
     for key in keys.iter().filter(|key| !key.is_null()) {
         let object = key
             .as_object()
@@ -2193,6 +2360,11 @@ fn validate_sync_payload(payload: &Value) -> Result<(), String> {
         }
         if id == "ai-agent" {
             validate_agent_action(key)?;
+            if let Some(session) = agent_session_label(key)
+                && !agent_session_labels.insert(session.to_lowercase())
+            {
+                return Err(format!("AI session label must be unique: {session}"));
+            }
         }
         if screenshot_kind(key).is_some()
             && key
@@ -2306,6 +2478,40 @@ fn valid_action_id(id: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || character == '-'))
 }
 
+fn validated_project_directory(directory: &str) -> Result<PathBuf, String> {
+    let directory = directory.trim();
+    if directory.is_empty()
+        || directory.len() > MAX_JSON_STRING_BYTES
+        || directory.chars().any(char::is_control)
+    {
+        return Err("Project directory must be a valid absolute path".into());
+    }
+    let requested = Path::new(directory);
+    if !requested.is_absolute() {
+        return Err("Project directory must use an absolute path".into());
+    }
+    let canonical = requested
+        .canonicalize()
+        .map_err(|_| format!("Project directory does not exist: {directory}"))?;
+    if !canonical.is_dir() {
+        return Err(format!("Project directory is not a folder: {directory}"));
+    }
+    if canonical.to_str().is_none() {
+        return Err("Project directory must use valid UTF-8 characters".into());
+    }
+    Ok(canonical)
+}
+
+fn configured_agent_project_directory(action: &Value) -> Result<Option<PathBuf>, String> {
+    let Some(directory) = action.get("projectDirectory").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    if directory.trim().is_empty() {
+        return Ok(None);
+    }
+    validated_project_directory(directory).map(Some)
+}
+
 fn validate_agent_action(action: &Value) -> Result<(), String> {
     let agent = action.get("agent").and_then(Value::as_str).unwrap_or("");
     if !AI_AGENTS.contains(&agent) {
@@ -2317,6 +2523,9 @@ fn validate_agent_action(action: &Value) -> Result<(), String> {
         .unwrap_or("");
     if !AI_AGENT_WORKFLOWS.contains(&workflow) {
         return Err("Unsupported AI agent workflow".into());
+    }
+    if workflow == "new" && agent_session_label(action).is_none() {
+        return Err("AI sessions need a unique label between 1 and 18 characters".into());
     }
     if let Some(slot) = action.get("agentSlot").and_then(Value::as_u64)
         && !(1..=5).contains(&slot)
@@ -2340,6 +2549,14 @@ fn validate_agent_action(action: &Value) -> Result<(), String> {
             return Err("AI agent colors must use six-digit hexadecimal notation".into());
         }
     }
+    if action.get("projectDirectory").is_some()
+        && action
+            .get("projectDirectory")
+            .is_none_or(|directory| !directory.is_null() && !directory.is_string())
+    {
+        return Err("AI project directory must be a path string".into());
+    }
+    configured_agent_project_directory(action)?;
     Ok(())
 }
 
@@ -2631,6 +2848,26 @@ fn resolve_asset(state: State<'_, AppState>, asset_id: String) -> Result<String,
     state.0.resolve_asset(&asset_id)
 }
 
+#[tauri::command(rename_all = "camelCase")]
+fn validate_project_directory(directory: String) -> Result<String, String> {
+    let directory = validated_project_directory(&directory)?;
+    Ok(directory
+        .to_str()
+        .expect("validated project paths are UTF-8")
+        .to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn choose_project_directory(
+    initial_directory: Option<String>,
+) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        choose_project_directory_native(initial_directory.as_deref())
+    })
+    .await
+    .map_err(error_text)?
+}
+
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -2704,7 +2941,9 @@ pub fn run() {
             set_brightness,
             identify_device,
             test_action,
-            resolve_asset
+            resolve_asset,
+            validate_project_directory,
+            choose_project_directory
         ])
         .setup(|app| {
             let core = AppCore::new(app.handle().clone())
@@ -2993,10 +3232,20 @@ mod tests {
             agent_terminal_title(&json!({
                 "agent": "claude",
                 "agentWorkflow": "new",
-                "agentSlot": 1
+                "title": "CLAUDE 1"
             }))
             .as_deref(),
             Some("N1 Studio - CLAUDE 1")
+        );
+        assert_eq!(
+            agent_terminal_title(&json!({
+                "agent": "claude",
+                "agentWorkflow": "new",
+                "title": "CLAUDE 2",
+                "projectDirectory": "/home/user/Development/control-room"
+            }))
+            .as_deref(),
+            Some("N1 Studio - CLAUDE 2 · control-room")
         );
         assert!(
             agent_terminal_title(&json!({
@@ -3035,6 +3284,21 @@ mod tests {
             tagged_agent_slot(
                 "codex",
                 b"N1_STREAMCTRL_AGENT=claude\0N1_STREAMCTRL_SLOT=3\0"
+            ),
+            None
+        );
+        assert_eq!(
+            tagged_agent_session(
+                "claude",
+                b"N1_STREAMCTRL_AGENT=claude\0N1_STREAMCTRL_SESSION=CLAUDE 7\0"
+            )
+            .as_deref(),
+            Some("CLAUDE 7")
+        );
+        assert_eq!(
+            tagged_agent_session(
+                "claude",
+                b"N1_STREAMCTRL_AGENT=codex\0N1_STREAMCTRL_SESSION=CLAUDE 7\0"
             ),
             None
         );
@@ -3081,7 +3345,7 @@ mod tests {
         fs::write(proc_root.join("101/cmdline"), b"claude\0").unwrap();
         fs::write(
             proc_root.join("101/environ"),
-            b"N1_STREAMCTRL_AGENT=claude\0N1_STREAMCTRL_SLOT=2\0",
+            b"N1_STREAMCTRL_AGENT=claude\0N1_STREAMCTRL_SLOT=2\0N1_STREAMCTRL_PROJECT=/tmp/project-a\0",
         )
         .unwrap();
         fs::write(proc_root.join("101/status"), b"Name:\tclaude\nPPid:\t200\n").unwrap();
@@ -3097,17 +3361,53 @@ mod tests {
         assert_eq!(statuses["codex"], AgentProcessStatus::default());
         assert_eq!(statuses["claude"].count, 1);
         assert_eq!(statuses["claude"].slots, BTreeSet::from([2]));
+        assert_eq!(
+            statuses["claude"].sessions,
+            BTreeSet::from([("CLAUDE 2".to_string(), "/tmp/project-a".to_string())])
+        );
+        assert_eq!(
+            tagged_agent_window_id(
+                &proc_root,
+                &[VisibleWindow {
+                    id: "0x42".into(),
+                    pid: 200,
+                }],
+                "claude",
+                "CLAUDE 2",
+                Some(2),
+                Some(Path::new("/tmp/project-a")),
+            )
+            .as_deref(),
+            Some("0x42")
+        );
+        assert!(
+            tagged_agent_window_id(
+                &proc_root,
+                &[VisibleWindow {
+                    id: "0x42".into(),
+                    pid: 200,
+                }],
+                "claude",
+                "CLAUDE 2",
+                Some(2),
+                Some(Path::new("/tmp/project-b")),
+            )
+            .is_none()
+        );
         fs::remove_dir_all(proc_root).unwrap();
     }
 
     #[test]
     fn validates_agent_profiles_and_slots() {
+        let project_directory = std::env::temp_dir();
         let valid_agent = json!({
             "id": "ai-agent",
             "agent": "codex",
-            "agentWorkflow": "debug",
+            "agentWorkflow": "new",
+            "title": "CODEX 3",
             "agentMonitor": "codex",
             "agentSlot": 3,
+            "projectDirectory": project_directory,
             "color": "#343c40",
             "activeColor": "#37b7ff",
             "idleColor": "#343c40"
@@ -3140,8 +3440,39 @@ mod tests {
         assert!(
             validate_agent_action(&json!({
                 "id": "ai-agent",
+                "agent": "codex",
+                "agentWorkflow": "new",
+                "title": "BAD\nLABEL"
+            }))
+            .is_err()
+        );
+        let duplicate_session = json!({
+            "id": "ai-agent",
+            "agent": "claude",
+            "agentWorkflow": "new",
+            "title": "CODEX 3"
+        });
+        let mut duplicate_keys = vec![Value::Null; 15];
+        duplicate_keys[0] = keys[0].clone();
+        duplicate_keys[1] = duplicate_session;
+        assert!(
+            validate_sync_payload(&json!({"profile": "codex-cli", "keys": duplicate_keys}))
+                .is_err()
+        );
+        assert!(
+            validate_agent_action(&json!({
+                "id": "ai-agent",
                 "agent": "unknown",
                 "agentWorkflow": "new"
+            }))
+            .is_err()
+        );
+        assert!(
+            validate_agent_action(&json!({
+                "id": "ai-agent",
+                "agent": "claude",
+                "agentWorkflow": "debug",
+                "projectDirectory": "relative/project"
             }))
             .is_err()
         );

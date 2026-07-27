@@ -2138,6 +2138,166 @@ kbd {
   line-height: 1.45;
 }
 
+.agent-model-setting {
+  margin-top: 13px;
+}
+
+.agent-model-options {
+  margin-top: 7px;
+  padding: 3px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+  border: 1px solid #293337;
+  border-radius: 8px;
+  background: #090d0f;
+}
+
+.agent-model-options button {
+  min-width: 0;
+  padding: 7px 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: #626e73;
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  text-align: left;
+}
+
+.agent-model-options button:hover {
+  color: #aab3b0;
+  background: #12181b;
+}
+
+.agent-model-options button.active {
+  border-color: color-mix(in srgb, var(--model-color) 42%, #344247);
+  background: color-mix(in srgb, var(--model-color) 11%, #151c1f);
+  color: var(--model-color);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--model-color) 9%, transparent);
+}
+
+.agent-model-options button:disabled {
+  opacity: .38;
+  cursor: not-allowed;
+}
+
+.agent-model-glyph {
+  display: grid;
+  place-items: center;
+}
+
+.agent-model-glyph svg {
+  width: 13px;
+}
+
+.agent-model-options strong {
+  overflow: hidden;
+  font: 650 7px "DM Mono", monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-project-setting {
+  margin-top: 13px;
+}
+
+.agent-project-field {
+  height: 40px;
+  margin-top: 7px;
+  padding-left: 10px;
+  display: grid;
+  grid-template-columns: 17px minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid #303a3e;
+  border-radius: 8px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--agent-color, #37b7ff) 6%, transparent), transparent 36%),
+    #0a0e10;
+  transition: border-color .16s ease, box-shadow .16s ease;
+}
+
+.agent-project-field:focus-within {
+  border-color: color-mix(in srgb, var(--agent-color, #37b7ff) 58%, #354146);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--agent-color, #37b7ff) 9%, transparent);
+}
+
+.agent-project-field.invalid {
+  border-color: color-mix(in srgb, var(--danger) 70%, #303a3e);
+}
+
+.agent-project-field.picking {
+  background:
+    linear-gradient(90deg, transparent, color-mix(in srgb, var(--agent-color, #37b7ff) 12%, transparent), transparent),
+    #0a0e10;
+  background-size: 180% 100%;
+  animation: asset-scan 1s linear infinite;
+}
+
+.agent-project-icon {
+  color: var(--agent-color, #37b7ff);
+  display: grid;
+  place-items: center;
+}
+
+.agent-project-icon svg {
+  width: 15px;
+}
+
+.agent-project-field input {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #d5dcda;
+  font: 500 8px "DM Mono", monospace;
+}
+
+.agent-project-field input::placeholder {
+  color: #4f5a5f;
+}
+
+.agent-project-field > button {
+  width: 32px;
+  height: 38px;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid #293337;
+  background: color-mix(in srgb, var(--agent-color, #37b7ff) 5%, transparent);
+  color: var(--agent-color, #37b7ff);
+  display: grid;
+  place-items: center;
+}
+
+.agent-project-field > button:hover {
+  background: color-mix(in srgb, var(--agent-color, #37b7ff) 12%, transparent);
+}
+
+.agent-project-field > button:disabled,
+.agent-project-field input:disabled {
+  opacity: .42;
+  cursor: not-allowed;
+}
+
+.agent-project-field > button svg {
+  width: 13px;
+}
+
+.agent-project-note {
+  min-height: 12px;
+  margin: 6px 2px 0;
+  color: #5f6b70;
+  font-size: 7.5px;
+  line-height: 1.4;
+}
+
+.agent-project-note.error {
+  color: var(--danger);
+}
+
 .screenshot-output-toggle {
   margin-top: 8px;
 }
