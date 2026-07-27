@@ -374,6 +374,34 @@ def draw_symbol(draw: ImageDraw.ImageDraw, icon: str, color: tuple[int, int, int
         draw.line((48, 29, 48, 46), fill=bright, width=3)
 
 
+def draw_agent_model_indicator(draw: ImageDraw.ImageDraw, key: dict[str, Any]) -> None:
+    if key.get("id") != "ai-agent" or key.get("agentWorkflow") == "new":
+        return
+    agent = str(key.get("agent") or "")
+    colors = {
+        "codex": rgb("#37b7ff"),
+        "claude": rgb("#ff9f1c"),
+        "gemini": rgb("#a78bfa"),
+    }
+    color = colors.get(agent)
+    if color is None:
+        return
+
+    draw.ellipse((76, 7, 89, 20), fill=(6, 10, 13), outline=color, width=1)
+    if agent == "codex":
+        draw.ellipse((79, 10, 86, 17), outline=color, width=1)
+        draw.ellipse((82, 13, 83, 14), fill=color)
+    elif agent == "claude":
+        for endpoint in ((82, 9), (82, 18), (78, 14), (87, 14), (79, 10), (86, 17), (86, 10), (79, 17)):
+            draw.line((82, 14, *endpoint), fill=color, width=1)
+        draw.ellipse((81, 13, 83, 15), fill=color)
+    else:
+        draw.polygon(
+            ((82, 9), (84, 12), (88, 14), (84, 16), (82, 19), (80, 16), (77, 14), (80, 12)),
+            outline=color,
+        )
+
+
 FALLBACK_WAVEFORM = (
     0.18, 0.34, 0.48, 0.30, 0.70, 0.42, 0.86, 0.56,
     0.38, 0.72, 0.94, 0.48, 0.28, 0.62, 0.82, 0.40,
@@ -467,6 +495,7 @@ def render_key(key: dict[str, Any]) -> Image.Image:
 
     draw.rounded_rectangle((2, 2, 93, 93), radius=10, outline=(48, 53, 57), width=2)
     draw_symbol(draw, str(key.get("icon", "app")), base)
+    draw_agent_model_indicator(draw, key)
     if key.get("agentMonitor"):
         active = key.get("agentActive") is True
         dot = tuple(min(255, channel + 85) for channel in base) if active else (57, 66, 70)
@@ -488,19 +517,18 @@ def custom_icon_frame(frame: Image.Image, key: dict[str, Any]) -> Image.Image:
     background = Image.new("RGBA", KEY_SIZE, (3, 5, 6, 255))
     image = Image.alpha_composite(background, fitted).convert("RGB")
     title = str(key.get("title") or "").strip()
-    if not title:
-        return image
-
     draw = ImageDraw.Draw(image, "RGBA")
-    draw.rectangle((0, 66, 96, 96), fill=(2, 4, 5, 184))
-    label, font = fit_text(draw, title, 82)
-    box = draw.textbbox((0, 0), label, font=font)
-    draw.text(
-        ((96 - (box[2] - box[0])) / 2, 74),
-        label,
-        font=font,
-        fill=(248, 250, 247, 255),
-    )
+    if title:
+        draw.rectangle((0, 66, 96, 96), fill=(2, 4, 5, 184))
+        label, font = fit_text(draw, title, 82)
+        box = draw.textbbox((0, 0), label, font=font)
+        draw.text(
+            ((96 - (box[2] - box[0])) / 2, 74),
+            label,
+            font=font,
+            fill=(248, 250, 247, 255),
+        )
+    draw_agent_model_indicator(draw, key)
     return image
 
 

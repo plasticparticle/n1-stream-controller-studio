@@ -1174,6 +1174,33 @@ kbd {
   background: #394247;
 }
 
+.agent-model-indicator {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 4;
+  width: 10px;
+  height: 10px;
+  border: 1px solid color-mix(in srgb, var(--model-color) 72%, #d5ddd8);
+  border-radius: 50%;
+  background: #080c0f;
+  color: var(--model-color);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--model-color) 35%, transparent);
+  display: grid;
+  place-items: center;
+}
+
+.key-screen .agent-model-indicator svg {
+  position: static;
+  width: 6px;
+  height: 6px;
+  min-width: 0;
+  max-width: none;
+  color: currentColor;
+  stroke-width: 2.2;
+  filter: none;
+}
+
 .agent-active .agent-state-dot {
   background: var(--key-color);
   box-shadow: 0 0 7px var(--key-color);
@@ -2285,6 +2312,74 @@ kbd {
   font: 650 7px "DM Mono", monospace;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.agent-prompt-setting {
+  margin-top: 13px;
+}
+
+.agent-prompt-field {
+  position: relative;
+  min-height: 94px;
+  margin-top: 7px;
+  border: 1px solid #2b363a;
+  border-radius: 8px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--agent-color) 7%, transparent), transparent 35%),
+    #090d0f;
+  overflow: hidden;
+  transition: border-color .18s ease, box-shadow .18s ease;
+}
+
+.agent-prompt-field:focus-within {
+  border-color: color-mix(in srgb, var(--agent-color) 58%, #3b484d);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--agent-color) 8%, transparent);
+}
+
+.agent-prompt-setting.empty .agent-prompt-field {
+  border-color: color-mix(in srgb, #ff9f1c 38%, #2b363a);
+}
+
+.agent-prompt-mark {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  color: var(--agent-color);
+  font: 700 8px "DM Mono", monospace;
+  letter-spacing: -.08em;
+}
+
+.agent-prompt-field textarea {
+  width: 100%;
+  min-height: 92px;
+  padding: 9px 10px 10px 35px;
+  resize: vertical;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #d7ddd9;
+  font: 500 9px/1.55 "DM Mono", monospace;
+}
+
+.agent-prompt-field textarea::placeholder {
+  color: #4f595e;
+}
+
+.agent-prompt-field textarea:disabled {
+  opacity: .5;
+  resize: none;
+}
+
+.agent-prompt-note {
+  min-height: 12px;
+  margin: 6px 2px 0;
+  color: #687378;
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.agent-prompt-setting.empty .agent-prompt-note {
+  color: #b88648;
 }
 
 .agent-project-setting {

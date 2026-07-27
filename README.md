@@ -30,7 +30,7 @@ Good news! N1 Stream Controller Studio currently delivers:
 - Up to eight pages per profile, with physical profile and page switching
 - Full-screen, area, and window screenshots with save-or-copy-to-clipboard behavior
 - Sound buttons with waveforms, playheads, loops, restart/stop modes, and live playing colors
-- One reusable AI Session action plus ten focused AI workflows
+- Reusable AI Session and custom AI Prompt actions plus ten focused AI workflows
 - Live color-coded session keys that show which CLI terminals are running
 - Safe action previewing without accidentally replacing a deck key
 - Native startup and USB-reconnect restoration, so the deck comes back without an editor nudge
@@ -94,6 +94,7 @@ Codex, Claude, and Gemini each receive a 15-key factory profile:
 The dedicated **AI** catalogue stays intentionally compact:
 
 - One reusable **AI Session** action
+- One reusable **AI Prompt** action with a per-button prompt
 - One copy of each of the ten focused workflows
 
 Drop **AI Session** more than once and Studio assigns the lowest available model
@@ -102,9 +103,16 @@ so it must be unique. Duplicating a session key or an entire profile also assign
 numbers instead of cloning an identity.
 
 Every AI key has a model selector for Codex, Claude, or Gemini. Changing it updates the
-built-in provider icon and renumbers an automatically named session for the new model;
-an uploaded custom icon and a custom unique label stay untouched. The dedicated factory
-profiles remain preconfigured for their respective model.
+built-in provider icon on sessions and renumbers an automatically named session for the
+new model. Workflow and prompt keys retain their semantic icon—Plan, Debug, Docs, and
+so on—and show the selected model in a small colored badge. Uploaded custom icons and
+custom unique labels stay untouched. The dedicated factory profiles remain
+preconfigured for their respective model.
+
+Drop **AI Prompt**, choose its model and project, then write up to 1,000 characters in
+the inspector. Pressing the key opens the selected CLI with that saved prompt. Prompts
+are passed directly as process arguments rather than through a shell, so punctuation
+and shell-like characters remain literal text.
 
 Sessions open through the system-configured `x-terminal-emulator`. Studio tags each
 terminal with its model, unique label, and project; pressing the same key again focuses

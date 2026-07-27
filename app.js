@@ -58,6 +58,9 @@ const backend = {
         screenshotClipboard: action?.screenshotClipboard === true,
         agent: action?.agent || null,
         agentWorkflow: action?.agentWorkflow || null,
+        agentPrompt: action?.agentWorkflow === "prompt"
+          ? String(action?.agentPrompt || "").slice(0, 1000)
+          : null,
         agentSlot: Number(action?.agentSlot) || null,
         projectDirectory: action?.projectDirectory || null
       }
@@ -259,16 +262,23 @@ const actionCatalog = [
 
 const agentProfileIds = ["codex-cli", "claude-cli", "gemini-cli"];
 const agentWorkflowDefinitions = [
-  ["resume", "RESUME", "#38d996", "Continue the latest session"],
-  ["plan", "PLAN", "#e8ff58", "Plan the next change before editing"],
-  ["build", "BUILD", "#37b7ff", "Build a requested feature"],
-  ["debug", "DEBUG", "#ef476f", "Diagnose and fix the current issue"],
-  ["test", "TEST", "#a78bfa", "Run tests and repair failures"],
-  ["review", "REVIEW", "#ff9f1c", "Review the current working tree"],
-  ["refactor", "REFACTOR", "#38d996", "Refactor without changing behavior"],
-  ["explain", "EXPLAIN", "#37b7ff", "Explain the current codebase"],
-  ["docs", "DOCS", "#a78bfa", "Improve project documentation"],
-  ["ship", "SHIP CHECK", "#e8ff58", "Run final checks and prepare a handoff"]
+  ["resume", "RESUME", "resume", "#38d996", "Continue the latest session"],
+  ["plan", "PLAN", "plan", "#e8ff58", "Plan the next change before editing"],
+  ["build", "BUILD", "build", "#37b7ff", "Build a requested feature"],
+  ["debug", "DEBUG", "bug", "#ef476f", "Diagnose and fix the current issue"],
+  ["test", "TEST", "test", "#a78bfa", "Run tests and repair failures"],
+  ["review", "REVIEW", "review", "#ff9f1c", "Review the current working tree"],
+  ["refactor", "REFACTOR", "refactor", "#38d996", "Refactor without changing behavior"],
+  ["explain", "EXPLAIN", "explain", "#37b7ff", "Explain the current codebase"],
+  ["docs", "DOCS", "docs", "#a78bfa", "Improve project documentation"],
+  ["ship", "SHIP CHECK", "ship", "#e8ff58", "Run final checks and prepare a handoff"]
+];
+const agentPromptDefinition = [
+  "prompt",
+  "AI PROMPT",
+  "explain",
+  "#ff9f1c",
+  "Send a saved prompt to the selected AI model"
 ];
 
 const agentDefinitions = {
@@ -282,7 +292,9 @@ function agentDefinition(agent) {
 }
 
 function agentWorkflowDefinition(workflow) {
-  return agentWorkflowDefinitions.find(([id]) => id === workflow) || null;
+  return workflow === agentPromptDefinition[0]
+    ? agentPromptDefinition
+    : agentWorkflowDefinitions.find(([id]) => id === workflow) || null;
 }
 
 function defaultAgentTitle(action, agent = action?.agent || "codex") {
@@ -299,12 +311,12 @@ function agentActionPresentation(action, agent, updateTitle = false) {
   const workflowTitle = workflowDefinition?.[1] || "SESSION";
   const description = isSession
     ? `Focus this named ${definition.label} session, or open it in the system terminal`
-    : workflowDefinition?.[3] || action.description;
+    : workflowDefinition?.[4] || action.description;
   return {
     agent,
     agentMonitor: isSession ? agent : null,
     activeColor: isSession ? definition.color : action.activeColor,
-    icon: definition.icon,
+    icon: isSession ? definition.icon : workflowDefinition?.[2] || definition.icon,
     name: isSession ? `${definition.label} Session` : `${definition.label} ${workflowTitle}`,
     subtitle: `${definition.label} CLI · ${isSession ? "Named session" : workflow}`,
     description,
@@ -328,7 +340,21 @@ actionCatalog.push({
   category: "ai",
   group: "AI Sessions"
 });
-agentWorkflowDefinitions.forEach(([workflow, title, color, description]) => {
+actionCatalog.push({
+  id: "ai-agent",
+  catalogId: "ai-prompt",
+  name: "AI Prompt",
+  subtitle: "Choose a model · Write your prompt",
+  description: agentPromptDefinition[4],
+  agent: "codex",
+  agentWorkflow: "prompt",
+  agentPrompt: "",
+  icon: agentPromptDefinition[2],
+  color: agentPromptDefinition[3],
+  category: "ai",
+  group: "AI Prompts"
+});
+agentWorkflowDefinitions.forEach(([workflow, title, icon, color, description]) => {
   actionCatalog.push({
     id: "ai-agent",
     catalogId: `ai-${workflow}`,
@@ -337,7 +363,7 @@ agentWorkflowDefinitions.forEach(([workflow, title, color, description]) => {
     description,
     agent: "codex",
     agentWorkflow: workflow,
-    icon: agentDefinitions.codex.icon,
+    icon,
     color,
     category: "ai",
     group: "AI Workflows"
@@ -365,7 +391,7 @@ function agentProfileLayout(agent) {
     }
   ]);
   const workflows = agentWorkflowDefinitions.map(
-    ([workflow, title, color, description]) => [
+    ([workflow, title, icon, color, description]) => [
       "ai-agent",
       title,
       color,
@@ -375,7 +401,7 @@ function agentProfileLayout(agent) {
         description,
         agent,
         agentWorkflow: workflow,
-        icon: definition.icon
+        icon
       }
     ]
   );
@@ -966,6 +992,19 @@ function soundWaveformMarkup(sound, playback) {
   `;
 }
 
+function agentModelIndicatorMarkup(key) {
+  if (key?.id !== "ai-agent" || isAgentSession(key)) return "";
+  const definition = agentDefinition(key.agent);
+  return `
+    <span
+      class="agent-model-indicator"
+      style="--model-color:${definition.color}"
+      title="${definition.label}"
+      aria-label="${definition.label} model"
+    >${iconMarkup(definition.icon)}</span>
+  `;
+}
+
 function agentStatusFor(agent) {
   return agentStatuses.get(agent) || {
     count: 0,
@@ -1096,13 +1135,14 @@ function keyScreenMarkup(key, secondary = false, playback = null) {
     isAgentMonitored ? (isAgentActive ? "agent-active" : "agent-idle") : ""
   ].filter(Boolean).join(" ");
   const soundMarkup = isSound ? soundWaveformMarkup(key.sound, playback) : "";
+  const modelMarkup = agentModelIndicatorMarkup(key);
   const agentMarkup = isAgentMonitored
     ? `<span class="agent-state-dot" title="${isAgentActive ? "Agent running" : "Agent idle"}"></span>`
     : "";
   if (previewUrl) {
-    return `<div class="${screenClass}" style="--key-color:${color}"><img src="${escapeHtml(previewUrl)}" alt="" draggable="false">${soundMarkup}${agentMarkup}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
+    return `<div class="${screenClass}" style="--key-color:${color}"><img src="${escapeHtml(previewUrl)}" alt="" draggable="false">${soundMarkup}${modelMarkup}${agentMarkup}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
   }
-  return `<div class="${screenClass}" style="--key-color:${color}">${isSound ? "" : deviceIconMarkup(key.icon)}${soundMarkup}${agentMarkup}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
+  return `<div class="${screenClass}" style="--key-color:${color}">${isSound ? "" : deviceIconMarkup(key.icon)}${soundMarkup}${modelMarkup}${agentMarkup}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
 }
 
 function escapeHtml(value) {
@@ -1460,8 +1500,13 @@ function updateInspector() {
     : assignedKey ? "active" : "empty";
   document.querySelector("#clearKeyButton").disabled = !assignedKey;
   document.querySelector("#duplicateButton").disabled = !assignedKey;
+  const missingAgentPrompt = (
+    key?.id === "ai-agent"
+    && key.agentWorkflow === "prompt"
+    && !String(key.agentPrompt || "").trim()
+  );
   document.querySelector("#testActionButton").disabled =
-    !key || (key.id === "sound" && !key.sound?.id);
+    !key || (key.id === "sound" && !key.sound?.id) || missingAgentPrompt;
   const targetSelect = document.querySelector("#actionTarget");
   const actionValue = document.querySelector("#actionValue");
   const targetLabel = document.querySelector("#targetLabel");
@@ -1489,7 +1534,8 @@ function updateInspector() {
       refactor: "Behavior-safe refactor",
       explain: "Explain the codebase",
       docs: "Improve documentation",
-      ship: "Final ship check"
+      ship: "Final ship check",
+      prompt: "Run saved prompt"
     }[key.agentWorkflow] || "Agent workflow";
     const definition = agentDefinition(agent);
     const agentColor = definition.color;
@@ -1502,7 +1548,9 @@ function updateInspector() {
     statusElement.dataset.state = status.count ? "running" : "idle";
     document.querySelector("#agentRuntimeNote").textContent = isAgentSession(key)
       ? `“${key.title}” is this session’s unique ID; press it again to focus its terminal.`
-      : "Opens safely in the system-configured Linux terminal.";
+      : key.agentWorkflow === "prompt"
+        ? "Sends this button’s saved prompt as a literal CLI argument in a new terminal."
+        : "Opens safely in the system-configured Linux terminal.";
     document.querySelectorAll("[data-agent-model]").forEach((button) => {
       const buttonAgent = button.dataset.agentModel;
       const buttonDefinition = agentDefinition(buttonAgent);
@@ -1512,6 +1560,20 @@ function updateInspector() {
       button.setAttribute("aria-checked", String(buttonAgent === agent));
       button.disabled = !assignedKey;
     });
+    const promptSetting = document.querySelector("#agentPromptSetting");
+    const isPromptAction = key.agentWorkflow === "prompt";
+    promptSetting.hidden = !isPromptAction;
+    if (isPromptAction) {
+      const prompt = String(key.agentPrompt || "");
+      const promptInput = document.querySelector("#agentPrompt");
+      promptInput.value = prompt;
+      promptInput.disabled = !assignedKey;
+      document.querySelector("#agentPromptCount").textContent = `${prompt.length}/1000`;
+      promptSetting.classList.toggle("empty", !prompt.trim());
+      document.querySelector("#agentPromptNote").textContent = prompt.trim()
+        ? "Sent exactly as written—shell characters are not evaluated."
+        : "Add a prompt before testing or pressing this key.";
+    }
     const projectDirectory = String(key.projectDirectory || "");
     const projectInput = document.querySelector("#agentProjectDirectory");
     const projectField = document.querySelector("#agentProjectField");
@@ -2170,6 +2232,21 @@ function selectedAgentKey() {
   const key = activeLayout()?.[selectedIndex];
   return key?.id === "ai-agent" ? key : null;
 }
+
+const agentPromptInput = document.querySelector("#agentPrompt");
+agentPromptInput.addEventListener("input", (event) => {
+  const key = selectedAgentKey();
+  if (key?.agentWorkflow !== "prompt") return;
+  const prompt = event.target.value;
+  key.agentPrompt = prompt;
+  document.querySelector("#agentPromptCount").textContent = `${prompt.length}/1000`;
+  document.querySelector("#agentPromptSetting").classList.toggle("empty", !prompt.trim());
+  document.querySelector("#agentPromptNote").textContent = prompt.trim()
+    ? "Sent exactly as written—shell characters are not evaluated."
+    : "Add a prompt before testing or pressing this key.";
+  document.querySelector("#testActionButton").disabled = !prompt.trim();
+  requestDeviceSync();
+});
 
 document.querySelectorAll("[data-agent-model]").forEach((button) => {
   button.addEventListener("click", () => {

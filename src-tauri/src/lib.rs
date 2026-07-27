@@ -75,6 +75,7 @@ struct TestActionInput {
     screenshot_clipboard: Option<bool>,
     agent: Option<String>,
     agent_workflow: Option<String>,
+    agent_prompt: Option<String>,
     agent_slot: Option<u8>,
     project_directory: Option<String>,
 }
@@ -117,8 +118,9 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 const AI_AGENTS: &[&str] = &["codex", "claude", "gemini"];
 const AI_AGENT_WORKFLOWS: &[&str] = &[
     "new", "resume", "plan", "build", "debug", "test", "review", "refactor", "explain", "docs",
-    "ship",
+    "ship", "prompt",
 ];
+const MAX_AGENT_PROMPT_BYTES: usize = 4_000;
 
 fn empty_agent_statuses() -> HashMap<String, AgentProcessStatus> {
     AI_AGENTS
@@ -1683,7 +1685,7 @@ fn agent_workflow_prompt(workflow: &str) -> Option<&'static str> {
     }
 }
 
-fn agent_cli_args(agent: &str, workflow: &str) -> Vec<String> {
+fn agent_cli_args(agent: &str, workflow: &str, custom_prompt: Option<&str>) -> Vec<String> {
     if workflow == "new" {
         return Vec::new();
     }
@@ -1695,7 +1697,12 @@ fn agent_cli_args(agent: &str, workflow: &str) -> Vec<String> {
             _ => Vec::new(),
         };
     }
-    let Some(prompt) = agent_workflow_prompt(workflow) else {
+    let prompt = if workflow == "prompt" {
+        custom_prompt
+    } else {
+        agent_workflow_prompt(workflow)
+    };
+    let Some(prompt) = prompt else {
         return Vec::new();
     };
     match (agent, workflow) {
@@ -1728,6 +1735,31 @@ fn find_agent_executable(agent: &str) -> Option<PathBuf> {
         let candidate = directory.join(agent);
         is_user_executable(&candidate).then_some(candidate)
     })
+}
+
+fn configured_agent_prompt(action: &Value) -> Result<Option<&str>, String> {
+    if action.get("agentWorkflow").and_then(Value::as_str) != Some("prompt") {
+        return Ok(None);
+    }
+    let Some(value) = action.get("agentPrompt") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let prompt = value
+        .as_str()
+        .ok_or_else(|| "AI prompt must be text".to_string())?;
+    if prompt.len() > MAX_AGENT_PROMPT_BYTES {
+        return Err("AI prompts must be no longer than 4,000 bytes".into());
+    }
+    if prompt
+        .chars()
+        .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+    {
+        return Err("AI prompts contain unsupported control characters".into());
+    }
+    Ok((!prompt.trim().is_empty()).then_some(prompt))
 }
 
 fn agent_session_label(action: &Value) -> Option<&str> {
@@ -1836,6 +1868,10 @@ fn resolve_agent_commands(
         .get("agentWorkflow")
         .and_then(Value::as_str)
         .unwrap_or("new");
+    let custom_prompt = configured_agent_prompt(action)?;
+    if workflow == "prompt" && custom_prompt.is_none() {
+        return Err("Add a prompt before using this AI Prompt key".into());
+    }
     let executable = find_agent_executable(agent)
         .ok_or_else(|| format!("{agent} CLI was not found in PATH or ~/.local/bin"))?;
     let env_program = trusted_program_path("env")
@@ -1857,7 +1893,7 @@ fn resolve_agent_commands(
         ));
     }
     launch.push(executable.to_string_lossy().into_owned());
-    launch.extend(agent_cli_args(agent, workflow));
+    launch.extend(agent_cli_args(agent, workflow, custom_prompt));
 
     let mut args = Vec::new();
     if let Some(title) = agent_terminal_title(action) {
@@ -2277,6 +2313,9 @@ fn validated_test_action(input: TestActionInput) -> Result<Value, String> {
         action["agent"] = Value::String(input.agent.unwrap_or_else(|| "codex".into()));
         action["agentWorkflow"] =
             Value::String(input.agent_workflow.unwrap_or_else(|| "new".into()));
+        if let Some(prompt) = input.agent_prompt {
+            action["agentPrompt"] = Value::String(prompt);
+        }
         if let Some(slot) = input.agent_slot {
             action["agentSlot"] = json!(slot);
         }
@@ -2527,6 +2566,7 @@ fn validate_agent_action(action: &Value) -> Result<(), String> {
     if workflow == "new" && agent_session_label(action).is_none() {
         return Err("AI sessions need a unique label between 1 and 18 characters".into());
     }
+    configured_agent_prompt(action)?;
     if let Some(slot) = action.get("agentSlot").and_then(Value::as_u64)
         && !(1..=5).contains(&slot)
     {
@@ -3215,15 +3255,32 @@ mod tests {
 
     #[test]
     fn builds_safe_agent_workflow_arguments() {
-        assert_eq!(agent_cli_args("codex", "resume"), ["resume", "--last"]);
-        assert_eq!(agent_cli_args("claude", "resume"), ["--continue"]);
-        assert_eq!(agent_cli_args("gemini", "resume"), ["--resume"]);
-        let plan = agent_cli_args("claude", "plan");
+        assert_eq!(
+            agent_cli_args("codex", "resume", None),
+            ["resume", "--last"]
+        );
+        assert_eq!(agent_cli_args("claude", "resume", None), ["--continue"]);
+        assert_eq!(agent_cli_args("gemini", "resume", None), ["--resume"]);
+        let plan = agent_cli_args("claude", "plan", None);
         assert_eq!(&plan[..2], ["--permission-mode", "plan"]);
         assert!(plan[2].contains("Do not edit files yet"));
-        let gemini = agent_cli_args("gemini", "debug");
+        let gemini = agent_cli_args("gemini", "debug", None);
         assert_eq!(gemini[0], "--prompt-interactive");
         assert!(gemini[1].contains("root cause"));
+
+        let literal_prompt = "Review src; touch /tmp/must-not-run";
+        assert_eq!(
+            agent_cli_args("codex", "prompt", Some(literal_prompt)),
+            [literal_prompt]
+        );
+        assert_eq!(
+            agent_cli_args("claude", "prompt", Some(literal_prompt)),
+            [literal_prompt]
+        );
+        assert_eq!(
+            agent_cli_args("gemini", "prompt", Some(literal_prompt)),
+            ["--prompt-interactive", literal_prompt]
+        );
     }
 
     #[test]
@@ -3443,6 +3500,33 @@ mod tests {
                 "agent": "codex",
                 "agentWorkflow": "new",
                 "title": "BAD\nLABEL"
+            }))
+            .is_err()
+        );
+        assert!(
+            validate_agent_action(&json!({
+                "id": "ai-agent",
+                "agent": "claude",
+                "agentWorkflow": "prompt",
+                "agentPrompt": "Review the diff.\nThen explain the highest-risk change."
+            }))
+            .is_ok()
+        );
+        assert!(
+            validate_agent_action(&json!({
+                "id": "ai-agent",
+                "agent": "claude",
+                "agentWorkflow": "prompt",
+                "agentPrompt": "x".repeat(MAX_AGENT_PROMPT_BYTES + 1)
+            }))
+            .is_err()
+        );
+        assert!(
+            validate_agent_action(&json!({
+                "id": "ai-agent",
+                "agent": "claude",
+                "agentWorkflow": "prompt",
+                "agentPrompt": "bad\u{0000}prompt"
             }))
             .is_err()
         );

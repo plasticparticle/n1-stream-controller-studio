@@ -356,6 +356,23 @@ class AgentDisplayTests(unittest.TestCase):
 
         self.assertNotEqual(idle.getpixel((82, 13)), active.getpixel((82, 13)))
 
+    def test_workflow_model_badge_uses_the_selected_agent_color(self):
+        base = {
+            "id": "ai-agent",
+            "title": "PLAN",
+            "color": "#e8ff58",
+            "icon": "plan",
+            "agentWorkflow": "plan",
+        }
+        badges = {
+            agent: n1_service.render_key({**base, "agent": agent}).getpixel((82, 7))
+            for agent in ("codex", "claude", "gemini")
+        }
+
+        self.assertEqual(badges["codex"], n1_service.rgb("#37b7ff"))
+        self.assertEqual(badges["claude"], n1_service.rgb("#ff9f1c"))
+        self.assertEqual(badges["gemini"], n1_service.rgb("#a78bfa"))
+
 
 if __name__ == "__main__":
     unittest.main()

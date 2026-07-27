@@ -375,6 +375,23 @@
                     </button>
                   </div>
                 </div>
+                <div class="agent-prompt-setting" id="agentPromptSetting" hidden>
+                  <div class="label-row">
+                    <label for="agentPrompt">Prompt</label>
+                    <span class="asset-format-hint" id="agentPromptCount">0/1000</span>
+                  </div>
+                  <div class="agent-prompt-field">
+                    <span class="agent-prompt-mark" aria-hidden="true">&gt;_</span>
+                    <textarea
+                      id="agentPrompt"
+                      maxlength="1000"
+                      rows="5"
+                      spellcheck="true"
+                      placeholder="Review today’s changes and tell me the most valuable next step."
+                    ></textarea>
+                  </div>
+                  <p class="agent-prompt-note" id="agentPromptNote">Add a prompt before using this key.</p>
+                </div>
                 <div class="agent-project-setting">
                   <div class="label-row">
                     <label for="agentProjectDirectory">Project directory</label>
