@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 #[cfg(unix)]
@@ -32,6 +33,9 @@ const MAX_PENDING_HARDWARE_EVENTS: usize = 16;
 const MAX_ACTIVE_ACTION_PROCESSES: usize = 16;
 const ACTIVE_CONFIG_RESTORE_ATTEMPTS: usize = 8;
 const SHELL_ACTION_OPT_IN: &str = "N1_STUDIO_ALLOW_SHELL_ACTIONS";
+const AUTOSTART_FILE_NAME: &str = "n1-stream-controller-studio.desktop";
+const AUTOSTART_MANAGED_MARKER: &str = "X-N1-Studio-Managed=true";
+const MAX_AUTOSTART_ENTRY_BYTES: u64 = 16_384;
 const IMAGE_EXTENSIONS: &[&str] = &[".gif", ".jpg", ".jpeg", ".png", ".webp"];
 const SOUND_EXTENSIONS: &[&str] = &[".flac", ".mp3", ".ogg", ".wav"];
 const TRUSTED_PROGRAM_DIRS: &[&str] = &["/usr/bin", "/bin", "/usr/local/bin"];
@@ -41,6 +45,13 @@ const TRUSTED_PROGRAM_DIRS: &[&str] = &["/usr/bin", "/bin", "/usr/local/bin"];
 struct DriverPublicState {
     status: String,
     error: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AutostartPublicState {
+    enabled: bool,
+    current: bool,
 }
 
 struct DriverInner {
@@ -164,6 +175,147 @@ fn agent_statuses_json(statuses: &HashMap<String, AgentProcessStatus>) -> Value 
 
 fn error_text(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+fn user_config_home(
+    xdg_config_home: Option<&OsStr>,
+    home: Option<&OsStr>,
+) -> Result<PathBuf, String> {
+    if let Some(path) = xdg_config_home
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+    {
+        return Ok(path);
+    }
+    home.map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .map(|path| path.join(".config"))
+        .ok_or_else(|| "Unable to locate the user configuration directory".to_string())
+}
+
+fn autostart_path() -> Result<PathBuf, String> {
+    Ok(user_config_home(
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    )?
+    .join("autostart")
+    .join(AUTOSTART_FILE_NAME))
+}
+
+fn desktop_exec_argument(executable: &Path) -> Result<String, String> {
+    if !executable.is_absolute() {
+        return Err("The Studio executable path is not absolute".into());
+    }
+    let executable = executable
+        .to_str()
+        .ok_or_else(|| "The Studio executable path is not valid UTF-8".to_string())?;
+    let escaped = executable
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('`', "\\`")
+        .replace('$', "\\$");
+    Ok(format!("\"{escaped}\""))
+}
+
+fn autostart_entry(executable: &Path) -> Result<String, String> {
+    let executable = desktop_exec_argument(executable)?;
+    Ok(format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Version=1.0\n\
+         Name=N1 Stream Controller Studio\n\
+         Comment=Start the N1 controller driver after login\n\
+         Exec={executable} --hidden\n\
+         Icon=n1-stream-controller-studio\n\
+         Terminal=false\n\
+         X-GNOME-Autostart-enabled=true\n\
+         StartupNotify=false\n\
+         {AUTOSTART_MANAGED_MARKER}\n"
+    ))
+}
+
+fn expected_autostart() -> Result<(PathBuf, String), String> {
+    let executable = std::env::current_exe().map_err(error_text)?;
+    Ok((autostart_path()?, autostart_entry(&executable)?))
+}
+
+fn autostart_public_state() -> Result<AutostartPublicState, String> {
+    let (path, expected) = expected_autostart()?;
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(AutostartPublicState {
+                enabled: false,
+                current: false,
+            });
+        }
+        Err(error) => return Err(error_text(error)),
+    };
+    if !metadata.file_type().is_file() || metadata.len() > MAX_AUTOSTART_ENTRY_BYTES {
+        return Err("The Studio autostart entry is not a valid desktop file".into());
+    }
+    let current = fs::read_to_string(path).map_err(error_text)? == expected;
+    Ok(AutostartPublicState {
+        enabled: true,
+        current,
+    })
+}
+
+fn set_autostart_enabled_native(enabled: bool) -> Result<AutostartPublicState, String> {
+    let (path, entry) = expected_autostart()?;
+    if enabled {
+        let parent = path
+            .parent()
+            .ok_or_else(|| "The autostart directory is unavailable".to_string())?;
+        fs::create_dir_all(parent).map_err(error_text)?;
+        set_private_directory(parent)?;
+        if fs::symlink_metadata(&path).is_ok_and(|metadata| !metadata.file_type().is_file()) {
+            return Err("The Studio autostart path is not a regular file".into());
+        }
+        let temporary = path.with_extension("desktop.tmp");
+        write_private_file(&temporary, entry.as_bytes())?;
+        fs::rename(temporary, path).map_err(error_text)?;
+    } else {
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_file() => {
+                fs::remove_file(path).map_err(error_text)?;
+            }
+            Ok(_) => return Err("The Studio autostart path is not a regular file".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error_text(error)),
+        }
+    }
+    autostart_public_state()
+}
+
+fn repair_enabled_autostart_entry() -> Result<(), String> {
+    let (path, expected) = expected_autostart()?;
+    let Ok(metadata) = fs::symlink_metadata(&path) else {
+        return Ok(());
+    };
+    if !metadata.file_type().is_file() || metadata.len() > MAX_AUTOSTART_ENTRY_BYTES {
+        return Ok(());
+    }
+    let existing = fs::read_to_string(&path).map_err(error_text)?;
+    if existing == expected {
+        return Ok(());
+    }
+    if existing.contains(AUTOSTART_MANAGED_MARKER)
+        || existing.contains("Name=N1 Stream Controller Studio")
+    {
+        set_autostart_enabled_native(true)?;
+    }
+    Ok(())
+}
+
+fn starts_hidden<I, S>(arguments: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    arguments
+        .into_iter()
+        .any(|argument| argument.as_ref() == OsStr::new("--hidden"))
 }
 
 impl DriverBridge {
@@ -2802,6 +2954,16 @@ fn load_config(state: State<'_, AppState>) -> Value {
 }
 
 #[tauri::command]
+fn autostart_status() -> Result<AutostartPublicState, String> {
+    autostart_public_state()
+}
+
+#[tauri::command]
+fn set_autostart_enabled(enabled: bool) -> Result<AutostartPublicState, String> {
+    set_autostart_enabled_native(enabled)
+}
+
+#[tauri::command]
 fn minimize_window(app: AppHandle) -> Result<(), String> {
     app.get_webview_window("main")
         .ok_or_else(|| "Main window is unavailable".to_string())?
@@ -2971,6 +3133,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             device_status,
             load_config,
+            autostart_status,
+            set_autostart_enabled,
             minimize_window,
             close_window,
             start_window_drag,
@@ -2990,9 +3154,16 @@ pub fn run() {
                 .map_err(|error| std::io::Error::other(format!("Startup failed: {error}")))?;
             app.manage(AppState(core.clone()));
             build_tray(app)?;
+            if let Err(error) = repair_enabled_autostart_entry() {
+                eprintln!("[N1 Studio] Could not update the login startup entry: {error}");
+            }
             start_agent_monitor(core.clone());
             if let Err(error) = core.driver.start(core.clone()) {
                 core.driver.set_state(&core, "not_installed", error);
+            }
+            let start_hidden = starts_hidden(std::env::args_os().skip(1));
+            if !start_hidden && let Some(window) = app.get_webview_window("main") {
+                window.show()?;
             }
             Ok(())
         })
@@ -3018,6 +3189,31 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builds_safe_desktop_autostart_entries() {
+        let config = user_config_home(
+            Some(OsStr::new("/tmp/n1-config")),
+            Some(OsStr::new("/tmp/n1-home")),
+        )
+        .expect("absolute XDG config path");
+        assert_eq!(config, Path::new("/tmp/n1-config"));
+
+        let fallback = user_config_home(
+            Some(OsStr::new("relative-config")),
+            Some(OsStr::new("/tmp/n1-home")),
+        )
+        .expect("absolute home fallback");
+        assert_eq!(fallback, Path::new("/tmp/n1-home/.config"));
+
+        let entry = autostart_entry(Path::new("/opt/N1 Studio/bin/n1$studio"))
+            .expect("valid desktop entry");
+        assert!(entry.contains("Exec=\"/opt/N1 Studio/bin/n1\\$studio\" --hidden"));
+        assert!(entry.contains(AUTOSTART_MANAGED_MARKER));
+        assert!(autostart_entry(Path::new("relative/n1-studio")).is_err());
+        assert!(starts_hidden(["--hidden"]));
+        assert!(!starts_hidden(["--safe-mode"]));
+    }
 
     #[test]
     fn validates_supported_image_signatures() {

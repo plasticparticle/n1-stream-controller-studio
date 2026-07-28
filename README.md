@@ -33,6 +33,7 @@ Good news! N1 Stream Controller Studio currently delivers:
 - Reusable AI Session and custom AI Prompt actions plus ten focused AI workflows
 - Live color-coded session keys that show which CLI terminals are running
 - Safe action previewing without accidentally replacing a deck key
+- Optional per-user start on login, launching Studio quietly in the system tray
 - Native startup and USB-reconnect restoration, so the deck comes back without an editor nudge
 
 That’s right: it slices, it dices, and it puts **SHIP CHECK** on a physical button.
@@ -212,6 +213,11 @@ Bundled Python N1 sidecar
 
 Closing the window hides it while the controller remains active. Left-click the tray
 icon to reopen Studio; right-click it for **Open Studio** and **Quit**.
+
+Open **Studio settings** from the gear in the left rail to enable **Start on login**.
+Studio registers a per-user desktop autostart entry—no root access required—and launches
+hidden in the tray after sign-in. The native core immediately starts the bundled driver
+and restores the last active deck when the controller is available.
 
 For report geometry, reconnect behavior, status-display mapping, and USB capture,
 step into the glamorous engineering annex:

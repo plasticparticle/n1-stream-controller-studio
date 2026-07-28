@@ -14,6 +14,12 @@ const backend = {
   loadConfig() {
     return this.invoke("load_config");
   },
+  autostartStatus() {
+    return this.invoke("autostart_status");
+  },
+  setAutostart(enabled) {
+    return this.invoke("set_autostart_enabled", { enabled });
+  },
   sync(payload) {
     return this.invoke("sync_deck", { payload });
   },
@@ -2566,6 +2572,79 @@ document.querySelector("#windowClose").addEventListener("click", async () => {
     showToast("Could not close", error.message);
   }
 });
+
+const settingsDialog = document.querySelector("#settingsDialog");
+const settingsButton = document.querySelector("#settingsButton");
+const autostartToggle = document.querySelector("#autostartToggle");
+
+function renderAutostartState(state) {
+  const enabled = state?.enabled === true;
+  const current = state?.current === true;
+  autostartToggle.checked = enabled;
+  autostartToggle.disabled = false;
+  document.querySelector("#startupCard").dataset.state =
+    enabled && current ? "enabled" : enabled ? "checking" : "disabled";
+  document.querySelector("#autostartStatus").textContent =
+    enabled && current ? "ARMED" : enabled ? "UPDATING…" : "OFF";
+}
+
+async function refreshAutostartState() {
+  autostartToggle.disabled = true;
+  document.querySelector("#startupCard").dataset.state = "checking";
+  document.querySelector("#autostartStatus").textContent = "CHECKING…";
+  try {
+    renderAutostartState(await backend.autostartStatus());
+  } catch (error) {
+    document.querySelector("#startupCard").dataset.state = "error";
+    document.querySelector("#autostartStatus").textContent = "UNAVAILABLE";
+    showToast("Startup setting unavailable", error.message);
+  }
+}
+
+function openSettingsDialog() {
+  settingsDialog.classList.add("open");
+  settingsDialog.setAttribute("aria-hidden", "false");
+  settingsButton.classList.add("active");
+  void refreshAutostartState();
+}
+
+function closeSettingsDialog() {
+  if (!settingsDialog.classList.contains("open")) return;
+  settingsDialog.classList.remove("open");
+  settingsDialog.setAttribute("aria-hidden", "true");
+  settingsButton.classList.remove("active");
+  settingsButton.focus();
+}
+
+settingsButton.addEventListener("click", openSettingsDialog);
+document.querySelector("#settingsDialogClose").addEventListener("click", closeSettingsDialog);
+settingsDialog.addEventListener("click", (event) => {
+  if (event.target === settingsDialog) closeSettingsDialog();
+});
+autostartToggle.addEventListener("change", async () => {
+  const enabled = autostartToggle.checked;
+  autostartToggle.disabled = true;
+  document.querySelector("#startupCard").dataset.state = "checking";
+  document.querySelector("#autostartStatus").textContent =
+    enabled ? "ENABLING…" : "DISABLING…";
+  try {
+    const state = await backend.setAutostart(enabled);
+    renderAutostartState(state);
+    showToast(
+      enabled ? "Start on login enabled" : "Start on login disabled",
+      enabled
+        ? "Studio and the N1 driver will start hidden in the tray after sign-in."
+        : "Studio will only start when you open it."
+    );
+  } catch (error) {
+    autostartToggle.checked = !enabled;
+    autostartToggle.disabled = false;
+    document.querySelector("#startupCard").dataset.state = "error";
+    document.querySelector("#autostartStatus").textContent = "FAILED";
+    showToast("Could not update startup", error.message);
+  }
+});
+
 document.querySelector("#themeToggle").addEventListener("click", () => {
   document.body.classList.toggle("ambient-off");
 });
@@ -2950,6 +3029,7 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     closeCustomActionDialog();
     closeProfileDialog();
+    closeSettingsDialog();
     deselectKey();
   }
 });

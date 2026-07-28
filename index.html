@@ -33,6 +33,12 @@
           </button>
         </div>
         <div class="rail-bottom">
+          <button class="rail-button" id="settingsButton" aria-label="Studio settings" title="Studio settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"></path>
+            </svg>
+          </button>
           <button class="rail-button" id="themeToggle" aria-label="Toggle ambient lighting" title="Toggle ambient lighting">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4"></path>
@@ -520,6 +526,47 @@
         <strong id="toastTitle">Synced to N1</strong>
         <small id="toastMessage">Your layout is live on the device.</small>
       </span>
+    </div>
+
+    <div class="dialog-backdrop" id="settingsDialog" aria-hidden="true">
+      <section class="dialog settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settingsDialogTitle">
+        <button class="dialog-close" id="settingsDialogClose" type="button" aria-label="Close settings">
+          <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"></path></svg>
+        </button>
+        <p class="section-kicker">SYSTEM / STARTUP</p>
+        <h2 id="settingsDialogTitle">Studio settings</h2>
+        <p>Keep the control surface ready without opening the editor every time you sign in.</p>
+        <div class="startup-card" id="startupCard" data-state="checking">
+          <div class="startup-route" aria-hidden="true">
+            <span class="startup-node startup-login">
+              <svg viewBox="0 0 24 24"><path d="M12 3v9M7 7l5-4 5 4"></path><path d="M5 11a7 7 0 1 0 14 0"></path></svg>
+            </span>
+            <i></i>
+            <span class="startup-node startup-driver">
+              <svg viewBox="0 0 24 24"><path d="M8 3v4M16 3v4M6 7h12v5a6 6 0 0 1-12 0V7Z"></path><path d="M12 18v3"></path></svg>
+            </span>
+            <i></i>
+            <span class="startup-node startup-tray">
+              <svg viewBox="0 0 24 24"><path d="M5 5h14v14H5z"></path><path d="M8 15h8M9 9h6"></path></svg>
+            </span>
+          </div>
+          <label class="switch-row startup-toggle">
+            <span>
+              <strong>Start on login</strong>
+              <small>Launch hidden in the tray and start the N1 driver automatically</small>
+            </span>
+            <input id="autostartToggle" type="checkbox" disabled />
+            <i></i>
+          </label>
+          <div class="startup-status">
+            <span>USER SESSION</span>
+            <strong id="autostartStatus">CHECKING…</strong>
+          </div>
+        </div>
+        <p class="settings-footnote">
+          Closing Studio still keeps the driver active. Use <strong>Quit</strong> from the tray menu to stop it.
+        </p>
+      </section>
     </div>
 
     <div class="dialog-backdrop" id="customActionDialog" aria-hidden="true">

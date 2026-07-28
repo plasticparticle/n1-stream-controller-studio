@@ -2925,6 +2925,164 @@ kbd {
   border-color: #596469;
 }
 
+.settings-dialog {
+  width: 430px;
+}
+
+.startup-card {
+  position: relative;
+  padding: 18px;
+  border: 1px solid #2d373b;
+  border-radius: 12px;
+  overflow: hidden;
+  background:
+    linear-gradient(135deg, rgba(217,250,68,.045), transparent 48%),
+    #0a0e10;
+  transition: border-color .2s ease, box-shadow .2s ease;
+}
+
+.startup-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: .17;
+  background:
+    linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
+  background-size: 12px 12px;
+}
+
+.startup-card[data-state="enabled"] {
+  border-color: color-mix(in srgb, var(--acid) 34%, #2d373b);
+  box-shadow: inset 3px 0 var(--acid), 0 12px 35px rgba(0,0,0,.22);
+}
+
+.startup-card[data-state="error"] {
+  border-color: color-mix(in srgb, var(--danger) 48%, #2d373b);
+}
+
+.startup-route {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 34px 1fr 34px 1fr 34px;
+  align-items: center;
+  margin-bottom: 17px;
+}
+
+.startup-node {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #354045;
+  border-radius: 8px;
+  background: #111719;
+  color: #667277;
+  transition: color .2s ease, border-color .2s ease, box-shadow .2s ease;
+}
+
+.startup-node svg {
+  width: 16px;
+}
+
+.startup-route > i {
+  height: 1px;
+  background: #2a3337;
+  position: relative;
+}
+
+.startup-route > i::after {
+  content: "";
+  position: absolute;
+  top: -2px;
+  right: -1px;
+  width: 5px;
+  height: 5px;
+  border-top: 1px solid #566267;
+  border-right: 1px solid #566267;
+  transform: rotate(45deg);
+}
+
+.startup-card[data-state="enabled"] .startup-node {
+  border-color: color-mix(in srgb, var(--acid) 42%, #354045);
+  color: var(--acid);
+  box-shadow: 0 0 15px rgba(217,250,68,.09);
+}
+
+.startup-card[data-state="enabled"] .startup-route > i {
+  background: linear-gradient(90deg, var(--acid), rgba(217,250,68,.35));
+}
+
+.startup-card[data-state="enabled"] .startup-route > i::after {
+  border-color: var(--acid);
+}
+
+.startup-toggle {
+  position: relative;
+  z-index: 1;
+  margin-top: 0;
+  gap: 20px;
+}
+
+.startup-toggle > span {
+  min-width: 0;
+}
+
+.startup-toggle strong {
+  color: #d3d9d6;
+  font-size: 12px;
+}
+
+.startup-toggle small {
+  max-width: 280px;
+  margin-top: 4px;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.startup-toggle input:disabled + i {
+  opacity: .5;
+  cursor: wait;
+}
+
+.startup-status {
+  position: relative;
+  z-index: 1;
+  margin-top: 16px;
+  padding-top: 10px;
+  border-top: 1px solid #222a2e;
+  display: flex;
+  justify-content: space-between;
+  color: #59656a;
+  font: 600 8px "DM Mono", monospace;
+  letter-spacing: .1em;
+}
+
+.startup-status strong {
+  color: #788489;
+}
+
+.startup-card[data-state="enabled"] .startup-status strong {
+  color: var(--acid);
+}
+
+.startup-card[data-state="error"] .startup-status strong {
+  color: var(--danger);
+}
+
+.dialog > .settings-footnote {
+  margin: 12px 2px 0;
+  color: #59656a;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.settings-footnote strong {
+  color: #8e989b;
+}
+
 .dialog-submit {
   width: 100%;
   margin-top: 20px;
