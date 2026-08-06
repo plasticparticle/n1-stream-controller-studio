@@ -1,5 +1,12 @@
 # N1 Stream Controller Studio
 
+> [!IMPORTANT]
+> **Unofficial third-party software.** This is an independent community project. It is
+> **not affiliated with, endorsed, sponsored, supported, or approved by** TreasLin,
+> VSDinside, or any other maker or distributor of the N1 hardware. All product names,
+> trademarks, and brands are the property of their respective owners and are used for
+> identification purposes only. Use this software at your own risk.
+
 ## ⚠️ EARLY ALPHA — LOOK, DON’T RELY ⚠️
 
 > [!CAUTION]
