@@ -163,6 +163,28 @@ class DeviceInitializationTests(unittest.TestCase):
         self.assertEqual(calls, [("geometry",), ("mode", 2), ("init",)])
 
 
+class DisplayCommitTests(unittest.TestCase):
+    def tearDown(self):
+        n1_service._needs_confirmed_refresh = False
+
+    def test_first_sync_after_connect_gets_a_settled_confirming_refresh(self):
+        device = FakeDevice()
+        n1_service._needs_confirmed_refresh = True
+
+        with patch.object(n1_service._device_monitor_stop, "wait") as wait:
+            n1_service.commit_layout_refresh(device)
+
+        self.assertEqual(device.calls, [("refresh",), ("refresh",)])
+        wait.assert_called_once_with(n1_service.FIRST_SYNC_CONFIRM_DELAY)
+        self.assertFalse(n1_service._needs_confirmed_refresh)
+
+        n1_service.commit_layout_refresh(device)
+        self.assertEqual(
+            device.calls,
+            [("refresh",), ("refresh",), ("refresh",)],
+        )
+
+
 class BrightnessTests(unittest.TestCase):
     def test_brightness_is_committed_with_a_refresh(self):
         device = FakeDevice()

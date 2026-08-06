@@ -32,12 +32,14 @@ DEVICE_MONITOR_INTERVAL = 1.0
 RECONNECT_TIMEOUT = 8.0
 INSTANCE_TERMINATE_TIMEOUT = 2.0
 INSTANCE_KILL_TIMEOUT = 1.0
+FIRST_SYNC_CONFIRM_DELAY = 0.12
 
 _stdout_lock = threading.Lock()
 _device_lock = threading.RLock()
 _device_monitor_stop = threading.Event()
 _running = True
 _device: StreamDockN1 | None = None
+_needs_confirmed_refresh = False
 _instance_lock_fd: int | None = None
 
 
@@ -843,7 +845,7 @@ def initialize_n1_device(device: StreamDockN1) -> None:
 
 
 def connect() -> StreamDockN1:
-    global _device
+    global _device, _needs_confirmed_refresh
     with _device_lock:
         if _device is not None:
             return _device
@@ -876,6 +878,7 @@ def connect() -> StreamDockN1:
             raise
 
         _device = device
+        _needs_confirmed_refresh = True
         emit(
             {
                 "event": "status",
@@ -889,12 +892,13 @@ def connect() -> StreamDockN1:
 
 
 def close_device() -> None:
-    global _device
+    global _device, _needs_confirmed_refresh
     with _device_lock:
         device = _device
         if device is None:
             return
         _device = None
+        _needs_confirmed_refresh = False
         try:
             device.close(notify=False)
         except Exception as error:
@@ -969,6 +973,19 @@ def require_writable(device: StreamDockN1) -> None:
         raise RuntimeError("N1 HID transport is not writable")
 
 
+def commit_layout_refresh(device: StreamDockN1) -> None:
+    global _needs_confirmed_refresh
+    device.refresh()
+    if not _needs_confirmed_refresh:
+        return
+
+    # The legacy N1 identity can accept the first frame transfer before its Dock
+    # framebuffer is fully active. Confirm the first commit after it settles.
+    _device_monitor_stop.wait(FIRST_SYNC_CONFIRM_DELAY)
+    device.refresh()
+    _needs_confirmed_refresh = False
+
+
 def monitor_device() -> None:
     last_present: bool | None = None
     last_error = ""
@@ -1040,7 +1057,7 @@ def _sync_layout_once(payload: dict[str, Any]) -> dict[str, Any]:
                 )
 
         device.set_brightness(brightness)
-        device.refresh()
+        commit_layout_refresh(device)
         device.start_gif_loop()
     return {
         "written": written,

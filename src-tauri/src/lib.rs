@@ -649,26 +649,31 @@ impl AppCore {
             let vendor_id = read_text(path.join("idVendor")).to_lowercase();
             let product_id = read_text(path.join("idProduct")).to_lowercase();
             if vendor_id == USB_VENDOR_ID && product_id == USB_PRODUCT_ID {
+                let (connected, transport_ready) = device_connection_state(true, &driver.status);
                 return json!({
-                    "connected": true,
+                    "connected": connected,
                     "vendorId": vendor_id,
                     "productId": product_id,
                     "manufacturer": fallback(read_text(path.join("manufacturer")), "HOTSPOTEKUSB"),
                     "product": fallback(read_text(path.join("product")), "VSDinside N1"),
                     "busPath": entry.file_name().to_string_lossy(),
-                    "transportReady": driver.status == "ready",
+                    "transportReady": transport_ready,
                     "shellActionsEnabled": self.allow_shell_actions,
                     "agents": agents,
                     "driver": driver
                 });
             }
         }
+        // Dock-mode transitions can briefly remove the N1 from sysfs while the
+        // already-open HID transport remains writable and delivers input.
+        let (connected, transport_ready) = device_connection_state(false, &driver.status);
         json!({
-            "connected": false,
+            "connected": connected,
             "vendorId": USB_VENDOR_ID,
             "productId": USB_PRODUCT_ID,
+            "manufacturer": "HOTSPOTEKUSB",
             "product": "VSDinside N1",
-            "transportReady": false,
+            "transportReady": transport_ready,
             "shellActionsEnabled": self.allow_shell_actions,
             "agents": agents,
             "driver": driver
@@ -2440,6 +2445,11 @@ fn active_config_restore_delay(attempt: usize) -> Duration {
     Duration::from_millis(250 + (attempt.min(5) as u64 * 250))
 }
 
+fn device_connection_state(sysfs_detected: bool, driver_status: &str) -> (bool, bool) {
+    let transport_ready = driver_status == "ready";
+    (sysfs_detected || transport_ready, transport_ready)
+}
+
 fn validated_test_action(input: TestActionInput) -> Result<Value, String> {
     if !valid_action_id(&input.id) {
         return Err("Unsupported action type".into());
@@ -3291,6 +3301,16 @@ mod tests {
         assert_eq!(
             active_config_restore_delay(99),
             Duration::from_millis(1_500)
+        );
+    }
+
+    #[test]
+    fn treats_a_ready_hid_transport_as_connected_during_sysfs_transitions() {
+        assert_eq!(device_connection_state(false, "ready"), (true, true));
+        assert_eq!(device_connection_state(true, "reconnecting"), (true, false));
+        assert_eq!(
+            device_connection_state(false, "disconnected"),
+            (false, false)
         );
     }
 

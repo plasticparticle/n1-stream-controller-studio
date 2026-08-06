@@ -922,6 +922,14 @@ function autoSyncOnTransportReady(transportWasReady) {
   void requestDeviceSync({ immediate: true });
 }
 
+function confirmHardwareActivity() {
+  const transportWasReady = hardwareTransportReady;
+  deviceDetected = true;
+  hardwareTransportReady = true;
+  autoSyncOnTransportReady(transportWasReady);
+  void detectDevice();
+}
+
 function scheduleAutoSyncRetry() {
   if (!autoSyncQueued || autoSyncRetryCount >= maxAutoSyncRetries) return;
   const delay = Math.min(500 * (2 ** autoSyncRetryCount), 4000);
@@ -2850,6 +2858,11 @@ function handleHardwareEvent(message) {
     autoSyncOnTransportReady(transportWasReady);
     void detectDevice();
     return;
+  }
+  if (message.event === "input") {
+    // A valid input report proves that USB and HID are live even if a transient
+    // dock-mode sysfs poll left the last displayed state red.
+    confirmHardwareActivity();
   }
   if (message.event === "input" && message.type === "button") {
     const physicalKey = Number(message.key);
