@@ -104,30 +104,38 @@ Codex, Claude, and Gemini each receive a 15-key factory profile:
 The dedicated **AI** catalogue stays intentionally compact:
 
 - One reusable **AI Session** action
-- One reusable **AI Prompt** action with a per-button prompt
+- One reusable **AI Prompt** action with a centrally managed prompt override
 - One copy of each of the ten focused workflows
+- An **AI Usage** action that shows the known Codex/Claude/Gemini session state and sends `/usage` to the active session
 
 Drop **AI Session** more than once and Studio assigns the lowest available model
 number automatically: `CLAUDE 1`, `CLAUDE 2`, and so on. The label is the session ID,
 so it must be unique. Duplicating a session key or an entire profile also assigns new
 numbers instead of cloning an identity.
 
-Every AI key has a model selector for Codex, Claude, or Gemini. Changing it updates the
+AI Session keys own the working directory and model. Choose one **Active AI session**;
+only that session is focused, and every workflow or prompt injects into its existing CLI
+window instead of opening another terminal. Empty workflow overrides use the built-in
+prompt, while AI Prompt requires your custom text. Overrides are stored centrally per
+session and workflow, so changing the active session changes the target without editing
+each key.
+
+Every AI Session key has a model selector for Codex, Claude, or Gemini. Changing it updates the
 built-in provider icon on sessions and renumbers an automatically named session for the
 new model. Workflow and prompt keys retain their semantic icon—Plan, Debug, Docs, and
 so on—and show the selected model in a small colored badge. Uploaded custom icons and
 custom unique labels stay untouched. The dedicated factory profiles remain
 preconfigured for their respective model.
 
-Drop **AI Prompt**, choose its model and project, then write up to 1,000 characters in
-the inspector. Pressing the key opens the selected CLI with that saved prompt. Prompts
-are passed directly as process arguments rather than through a shell, so punctuation
-and shell-like characters remain literal text.
+Drop **AI Prompt**, select the active session, then write up to 4,000 characters in
+the inspector. Pressing the key types the saved prompt into that session and submits it.
+Prompts are injected as literal text rather than through a shell, so punctuation and
+shell-like characters remain literal.
 
 Sessions open through the system-configured `x-terminal-emulator`. Studio tags each
 terminal with its model, unique label, and project; pressing the same key again focuses
-that exact terminal instead of manufacturing another window. `wmctrl` supplies window
-activation and is recommended by the Debian package.
+that exact terminal instead of manufacturing another window. `wmctrl` and `xdotool`
+supply window activation and prompt injection and are recommended by the Debian package.
 
 Tagged sessions light their exact key:
 
@@ -144,8 +152,8 @@ and guess whether it is thinking, waiting, or asking for approval.
 Built-in AI launchers use fixed arguments and do not require shell-action opt-in.
 Studio searches `PATH` plus common user installation directories for each CLI.
 
-Every Codex, Claude, and Gemini key can target its own project directory. Select an
-assigned AI key, open **Agent launcher → Project directory**, and either type an
+Every AI Session can target its own project directory. Select an assigned AI Session
+key, open **Agent launcher → Project directory**, and either type an
 absolute path or choose a folder with the native picker. Studio validates and
 canonicalizes the directory before saving it, launches the terminal from that folder,
 and includes the project in session identity so one repository cannot steal

@@ -97,6 +97,15 @@ struct TestActionInput {
     agent_prompt: Option<String>,
     agent_slot: Option<u8>,
     project_directory: Option<String>,
+    agent_session: Option<AgentSessionInput>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AgentSessionInput {
+    agent: String,
+    title: String,
+    project_directory: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -137,7 +146,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 const AI_AGENTS: &[&str] = &["codex", "claude", "gemini"];
 const AI_AGENT_WORKFLOWS: &[&str] = &[
     "new", "resume", "plan", "build", "debug", "test", "review", "refactor", "explain", "docs",
-    "ship", "prompt",
+    "ship", "prompt", "usage",
 ];
 const MAX_AGENT_PROMPT_BYTES: usize = 4_000;
 
@@ -1141,16 +1150,76 @@ impl AppCore {
         Ok(json!({"ok": true}))
     }
 
+    fn inject_agent_action(
+        &self,
+        action: &Value,
+        project_directory: Option<&Path>,
+    ) -> Result<(), String> {
+        let workflow = action
+            .get("agentWorkflow")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if !focus_agent_terminal(action, project_directory) {
+            return Err(
+                "No matching AI session terminal is running. Activate an AI Session first.".into(),
+            );
+        }
+        if workflow == "resume" {
+            return Ok(());
+        }
+        let prompt = configured_agent_prompt(action)?.or_else(|| agent_workflow_prompt(workflow));
+        let prompt =
+            prompt.ok_or_else(|| "Add a prompt before using this AI Prompt key".to_string())?;
+        let program = trusted_program_path("xdotool")
+            .map_err(|error| format!("Unable to locate xdotool for CLI injection: {error}"))?;
+        let windows = visible_windows();
+        let agent = action.get("agent").and_then(Value::as_str).unwrap_or("");
+        let session = agent_session_label(action)
+            .ok_or_else(|| "AI workflow has no active session label".to_string())?;
+        let window_id = tagged_agent_window_id(
+            Path::new("/proc"),
+            &windows,
+            agent,
+            session,
+            None,
+            project_directory,
+        )
+        .ok_or_else(|| {
+            "No matching AI session terminal is running. Activate an AI Session first.".to_string()
+        })?;
+        if !run_xdotool(&program, &["windowactivate", "--sync", &window_id]) {
+            return Err("Could not focus the active AI session terminal".into());
+        }
+        let text = prompt.replace(['\r', '\n'], " ");
+        if !run_xdotool(
+            &program,
+            &["type", "--clearmodifiers", "--delay", "1", &text],
+        ) || !run_xdotool(&program, &["key", "Return"])
+        {
+            return Err("Could not inject the AI prompt into the active terminal".into());
+        }
+        Ok(())
+    }
+
     fn execute_action(self: &Arc<Self>, action: &Value, key: i64) -> Result<(), String> {
         let name = action_name(action, key);
         let is_sound = action.get("id").and_then(Value::as_str) == Some("sound");
         let is_screenshot = screenshot_kind(action).is_some();
         let is_agent = action.get("id").and_then(Value::as_str) == Some("ai-agent");
+        let agent_workflow = action
+            .get("agentWorkflow")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         let agent_project_directory = if is_agent {
             configured_agent_project_directory(action)?
         } else {
             None
         };
+        if is_agent && action.get("agentWorkflow").and_then(Value::as_str) != Some("new") {
+            self.inject_agent_action(action, agent_project_directory.as_deref())?;
+            self.emit(json!({"event":"action","ok":true,"key":key,"name":&name,"focused":true,"injected":true,"usage":agent_workflow == "usage","playing":false,"looping":false}));
+            return Ok(());
+        }
         if is_agent && focus_agent_terminal(action, agent_project_directory.as_deref()) {
             self.emit(json!({
                 "event": "action",
@@ -1916,6 +1985,7 @@ fn agent_workflow_prompt(workflow: &str) -> Option<&'static str> {
         "ship" => Some(
             "Run final quality checks, review the diff, and prepare a concise handoff. Do not commit or push unless I explicitly ask.",
         ),
+        "usage" => Some("/usage"),
         _ => None,
     }
 }
@@ -1973,9 +2043,6 @@ fn find_agent_executable(agent: &str) -> Option<PathBuf> {
 }
 
 fn configured_agent_prompt(action: &Value) -> Result<Option<&str>, String> {
-    if action.get("agentWorkflow").and_then(Value::as_str) != Some("prompt") {
-        return Ok(None);
-    }
     let Some(value) = action.get("agentPrompt") else {
         return Ok(None);
     };
@@ -2000,7 +2067,16 @@ fn configured_agent_prompt(action: &Value) -> Result<Option<&str>, String> {
 fn agent_session_label(action: &Value) -> Option<&str> {
     let workflow = action.get("agentWorkflow").and_then(Value::as_str)?;
     if workflow != "new" {
-        return None;
+        return action
+            .get("agentSession")
+            .and_then(|session| session.get("title"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|title| {
+                !title.is_empty()
+                    && title.chars().count() <= 18
+                    && !title.chars().any(char::is_control)
+            });
     }
     action
         .get("title")
@@ -2062,6 +2138,21 @@ fn focus_agent_terminal(action: &Value, project_directory: Option<&Path>) -> boo
 }
 
 fn run_wmctrl(program: &Path, args: &[&str]) -> bool {
+    Command::new(program)
+        .args(args)
+        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .env_remove("BASH_ENV")
+        .env_remove("CDPATH")
+        .env_remove("ENV")
+        .env_remove("SHELLOPTS")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn run_xdotool(program: &Path, args: &[&str]) -> bool {
     Command::new(program)
         .args(args)
         .env("PATH", "/usr/local/bin:/usr/bin:/bin")
@@ -2562,6 +2653,13 @@ fn validated_test_action(input: TestActionInput) -> Result<Value, String> {
         if let Some(directory) = input.project_directory {
             action["projectDirectory"] = Value::String(directory);
         }
+        if let Some(session) = input.agent_session {
+            action["agentSession"] = json!({
+                "agent": session.agent,
+                "title": session.title,
+                "projectDirectory": session.project_directory
+            });
+        }
         validate_agent_action(&action)?;
     }
     if let Some(id) = input.sound_id {
@@ -2782,7 +2880,16 @@ fn validated_project_directory(directory: &str) -> Result<PathBuf, String> {
 }
 
 fn configured_agent_project_directory(action: &Value) -> Result<Option<PathBuf>, String> {
-    let Some(directory) = action.get("projectDirectory").and_then(Value::as_str) else {
+    let directory = action
+        .get("projectDirectory")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            action
+                .get("agentSession")
+                .and_then(|session| session.get("projectDirectory"))
+                .and_then(Value::as_str)
+        });
+    let Some(directory) = directory else {
         return Ok(None);
     };
     if directory.trim().is_empty() {
@@ -2805,6 +2912,18 @@ fn validate_agent_action(action: &Value) -> Result<(), String> {
     }
     if workflow == "new" && agent_session_label(action).is_none() {
         return Err("AI sessions need a unique label between 1 and 18 characters".into());
+    }
+    if workflow != "new" {
+        let session = action
+            .get("agentSession")
+            .ok_or_else(|| "AI workflows need an active AI session".to_string())?;
+        let session_agent = session.get("agent").and_then(Value::as_str).unwrap_or("");
+        if session_agent != agent || !AI_AGENTS.contains(&session_agent) {
+            return Err("AI workflow session must use the selected agent".into());
+        }
+        if agent_session_label(action).is_none() {
+            return Err("AI workflow session needs a valid session label".into());
+        }
     }
     configured_agent_prompt(action)?;
     if let Some(slot) = action.get("agentSlot").and_then(Value::as_u64)
@@ -3833,6 +3952,7 @@ mod tests {
                 "id": "ai-agent",
                 "agent": "claude",
                 "agentWorkflow": "prompt",
+                "agentSession": {"agent": "claude", "title": "CLAUDE 1"},
                 "agentPrompt": "Review the diff.\nThen explain the highest-risk change."
             }))
             .is_ok()
