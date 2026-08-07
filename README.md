@@ -20,6 +20,8 @@ N1 Stream Controller Studio turns the TreasLin VSDinside N1 into a native,
 auto-syncing control surface for streaming, editing, desktop chores, soundboards,
 screenshots—and your favorite coding agents.
 
+![N1 Stream Controller Studio interface](docs/images/n1-stream-controller-studio.png)
+
 ![Claude CLI profile in N1 Stream Controller Studio](docs/images/n1-claude-cli-profile.png)
 
 ## The 30-second sales pitch
@@ -225,6 +227,10 @@ Open **Studio settings** from the gear in the left rail to enable **Start on log
 Studio registers a per-user desktop autostart entry—no root access required—and launches
 hidden in the tray after sign-in. The native core immediately starts the bundled driver
 and restores the last active deck when the controller is available.
+
+When enabling this setting from `npm run dev`, build once with `npm run build` first.
+Studio deliberately registers the self-contained release executable because a Tauri debug
+executable depends on the temporary development server and cannot be launched by itself at login.
 
 For report geometry, reconnect behavior, status-display mapping, and USB capture,
 step into the glamorous engineering annex:

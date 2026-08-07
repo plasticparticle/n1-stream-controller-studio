@@ -1,8 +1,8 @@
-const nativeRuntime = window.__TAURI__;
 const buildInfo = window.__N1_BUILD_INFO__ || {};
 
 const backend = {
   invoke(command, args = {}) {
+    const nativeRuntime = window.__TAURI__;
     if (!nativeRuntime?.core?.invoke) {
       return Promise.reject(new Error("N1 Studio must be opened through the native desktop application"));
     }
@@ -10,6 +10,9 @@ const backend = {
   },
   device() {
     return this.invoke("device_status");
+  },
+  ensureDriver() {
+    return this.invoke("ensure_driver");
   },
   loadConfig() {
     return this.invoke("load_config");
@@ -82,6 +85,7 @@ const backend = {
     return this.invoke("resolve_asset", { assetId });
   },
   listen(handler) {
+    const nativeRuntime = window.__TAURI__;
     if (!nativeRuntime?.event?.listen) {
       return Promise.reject(new Error("Native event bridge unavailable"));
     }
@@ -2989,7 +2993,94 @@ async function restoreAssetPaths() {
   renderKeys();
 }
 
+const startupOverlay = document.querySelector("#startupOverlay");
+const startupMessage = document.querySelector("#startupMessage");
+const startupStatus = document.querySelector("#startupStatus");
+const startupRetry = document.querySelector("#startupRetry");
+let startupAttempt = 0;
+
+function wait(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+function startupConnectionTimeout(promise, milliseconds = 1800) {
+  return Promise.race([
+    promise,
+    wait(milliseconds).then(() => {
+      throw new Error("The local service did not answer yet");
+    })
+  ]);
+}
+
+function renderStartupConnection(state, message, status) {
+  startupOverlay.dataset.state = state;
+  startupMessage.textContent = message;
+  startupStatus.textContent = status;
+}
+
+async function waitForNativeService(attempt) {
+  let connectionFailures = 0;
+  let driverPolls = 0;
+  while (attempt === startupAttempt) {
+    const waiting = connectionFailures >= 5;
+    renderStartupConnection(
+      waiting ? "error" : "connecting",
+      waiting
+        ? "The local service is taking longer than expected. Studio is still trying in the background."
+        : connectionFailures > 0
+          ? "Waiting for the desktop session and native service to settle…"
+          : "Connecting the editor to the native service…",
+      waiting ? "WAITING" : "CONNECTING"
+    );
+    startupRetry.hidden = !waiting;
+    try {
+      const device = await startupConnectionTimeout(backend.ensureDriver());
+      const driverStatus = device?.driver?.status;
+      startupRetry.hidden = true;
+      if (
+        (driverStatus === "starting" || driverStatus === "reconnecting" || driverStatus === "stopped")
+        && driverPolls < 7
+      ) {
+        renderStartupConnection(
+          "connecting",
+          driverStatus === "reconnecting"
+            ? "The native core is online. Restarting the N1 driver…"
+            : "The native core is online. Starting the N1 driver…",
+          "DRIVER START"
+        );
+        await wait(Math.min(450 + driverPolls * 150, 1200));
+        driverPolls += 1;
+        continue;
+      }
+      return device;
+    } catch (error) {
+      if (connectionFailures === 0) console.warn("Native service is not ready yet", error);
+      connectionFailures += 1;
+      driverPolls = 0;
+      await wait(Math.min(450 + connectionFailures * 150, 1200));
+    }
+  }
+  return null;
+}
+
+function revealStudio() {
+  document.querySelector("#appShell").setAttribute("aria-hidden", "false");
+  document.body.classList.remove("is-starting");
+  startupOverlay.setAttribute("aria-hidden", "true");
+}
+
 async function initializeNativeState() {
+  const attempt = ++startupAttempt;
+  startupRetry.hidden = true;
+  startupOverlay.removeAttribute("aria-hidden");
+  const initialDevice = await waitForNativeService(attempt);
+  if (!initialDevice || attempt !== startupAttempt) return;
+
+  renderStartupConnection(
+    "connecting",
+    "Connection established. Restoring your deck settings…",
+    "CORE READY"
+  );
   if (!restoredSavedLayouts) {
     try {
       const config = await backend.loadConfig();
@@ -3024,9 +3115,14 @@ async function initializeNativeState() {
   } catch (error) {
     console.error("Native hardware event bridge unavailable", error);
   }
+  revealStudio();
   await requestDeviceSync({ immediate: true });
   await detectDevice();
 }
+
+startupRetry.addEventListener("click", () => {
+  void initializeNativeState();
+});
 
 document.addEventListener("keydown", (event) => {
   const modifier = event.ctrlKey || event.metaKey;

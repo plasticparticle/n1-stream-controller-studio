@@ -10,8 +10,42 @@
     <title>N1 Stream Controller Studio</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
-  <body>
-    <div class="app-shell">
+  <body class="is-starting">
+    <section
+      class="startup-overlay"
+      id="startupOverlay"
+      data-state="connecting"
+      role="status"
+      aria-live="polite"
+      aria-labelledby="startupTitle"
+    >
+      <div class="startup-frame">
+        <div class="startup-brand" aria-hidden="true">
+          <span>N</span><span>1</span>
+        </div>
+        <div class="startup-signal" aria-hidden="true">
+          <i></i><i></i><i></i>
+          <span>
+            <svg viewBox="0 0 24 24"><path d="M8 3v4M16 3v4M6 7h12v5a6 6 0 0 1-12 0V7Z"></path><path d="M12 18v3"></path></svg>
+          </span>
+        </div>
+        <p class="section-kicker">SYSTEM / LOCAL CORE</p>
+        <h1 id="startupTitle">Starting Controller Studio</h1>
+        <p class="startup-message" id="startupMessage">Connecting the editor to the native service…</p>
+        <div class="startup-progress" aria-hidden="true"><i></i></div>
+        <div class="startup-readout">
+          <span><i></i> LOCAL SERVICE</span>
+          <strong id="startupStatus">CONNECTING</strong>
+        </div>
+        <button class="startup-retry" id="startupRetry" type="button" hidden>
+          Retry connection
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v6h6"></path><path d="M5.5 9A8 8 0 1 1 4 15"></path></svg>
+        </button>
+        <small class="startup-note">Studio keeps trying automatically while your desktop session settles.</small>
+      </div>
+    </section>
+
+    <div class="app-shell" id="appShell" aria-hidden="true">
       <nav class="rail" aria-label="Primary navigation">
         <button class="brand-mark" aria-label="N1 Stream Controller Studio home">
           <span>N</span><span>1</span>

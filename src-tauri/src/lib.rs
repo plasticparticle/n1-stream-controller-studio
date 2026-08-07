@@ -32,6 +32,12 @@ const MAX_DRIVER_LINE_BYTES: usize = 256_000;
 const MAX_PENDING_HARDWARE_EVENTS: usize = 16;
 const MAX_ACTIVE_ACTION_PROCESSES: usize = 16;
 const ACTIVE_CONFIG_RESTORE_ATTEMPTS: usize = 8;
+const DRIVER_START_RETRY_DELAYS: &[Duration] = &[
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+    Duration::from_secs(8),
+];
 const SHELL_ACTION_OPT_IN: &str = "N1_STUDIO_ALLOW_SHELL_ACTIONS";
 const AUTOSTART_FILE_NAME: &str = "n1-stream-controller-studio.desktop";
 const AUTOSTART_MANAGED_MARKER: &str = "X-N1-Studio-Managed=true";
@@ -56,6 +62,8 @@ struct AutostartPublicState {
 
 struct DriverInner {
     child: Option<CommandChild>,
+    launching: bool,
+    retrying: bool,
     next_id: u64,
     pending: HashMap<String, mpsc::Sender<Result<Value, String>>>,
     public: DriverPublicState,
@@ -234,8 +242,34 @@ fn autostart_entry(executable: &Path) -> Result<String, String> {
     ))
 }
 
+fn production_executable_candidate(executable: &Path) -> Option<PathBuf> {
+    let profile_directory = executable.parent()?;
+    if profile_directory.file_name()? != OsStr::new("debug") {
+        return None;
+    }
+    Some(
+        profile_directory
+            .parent()?
+            .join("release")
+            .join(executable.file_name()?),
+    )
+}
+
+fn autostart_executable(executable: &Path) -> Result<PathBuf, String> {
+    let Some(release_executable) = production_executable_candidate(executable) else {
+        return Ok(executable.to_path_buf());
+    };
+    if !release_executable.is_file() {
+        return Err(
+            "Start on login needs a release build. Run `npm run build`, then enable it again."
+                .into(),
+        );
+    }
+    release_executable.canonicalize().map_err(error_text)
+}
+
 fn expected_autostart() -> Result<(PathBuf, String), String> {
-    let executable = std::env::current_exe().map_err(error_text)?;
+    let executable = autostart_executable(&std::env::current_exe().map_err(error_text)?)?;
     Ok((autostart_path()?, autostart_entry(&executable)?))
 }
 
@@ -323,6 +357,8 @@ impl DriverBridge {
         Self {
             inner: Mutex::new(DriverInner {
                 child: None,
+                launching: false,
+                retrying: false,
                 next_id: 1,
                 pending: HashMap::new(),
                 public: DriverPublicState {
@@ -357,10 +393,11 @@ impl DriverBridge {
     fn start(&self, core: Arc<AppCore>) -> Result<(), String> {
         {
             let mut inner = lock(&self.inner);
-            if inner.child.is_some() {
+            if inner.child.is_some() || inner.launching {
                 return Ok(());
             }
             inner.stopping = false;
+            inner.launching = true;
             inner.public = DriverPublicState {
                 status: "starting".into(),
                 error: String::new(),
@@ -368,13 +405,22 @@ impl DriverBridge {
         }
         core.emit(json!({"event": "driver", "status": "starting", "error": ""}));
 
-        let command = core.app.shell().sidecar("n1-driver").map_err(error_text)?;
+        let command = core.app.shell().sidecar("n1-driver").map_err(|error| {
+            lock(&self.inner).launching = false;
+            error_text(error)
+        })?;
         let (mut events, child) = command.spawn().map_err(|error| {
             let message = format!("Unable to start the bundled N1 driver: {error}");
+            lock(&self.inner).launching = false;
             self.set_state(&core, "not_installed", &message);
             message
         })?;
-        lock(&self.inner).child = Some(child);
+        {
+            let mut inner = lock(&self.inner);
+            inner.launching = false;
+            inner.retrying = false;
+            inner.child = Some(child);
+        }
 
         tauri::async_runtime::spawn(async move {
             let mut stdout_buffer = Vec::new();
@@ -514,20 +560,52 @@ impl DriverBridge {
         }
         if restart {
             self.set_state(core, "reconnecting", &error);
-            let core = core.clone();
-            thread::spawn(move || {
-                thread::sleep(Duration::from_secs(1));
-                let _ = core.driver.start(core.clone());
-            });
+            self.schedule_retry(core.clone(), error);
         } else {
             self.set_state(core, "stopped", "");
         }
+    }
+
+    fn schedule_retry(&self, core: Arc<AppCore>, initial_error: String) {
+        {
+            let mut inner = lock(&self.inner);
+            if inner.stopping || inner.child.is_some() || inner.retrying {
+                return;
+            }
+            inner.retrying = true;
+        }
+        self.set_state(&core, "reconnecting", initial_error);
+
+        thread::spawn(move || {
+            let mut last_error = String::new();
+            for delay in DRIVER_START_RETRY_DELAYS {
+                thread::sleep(*delay);
+                if lock(&core.driver.inner).stopping {
+                    lock(&core.driver.inner).retrying = false;
+                    return;
+                }
+                match core.driver.start(core.clone()) {
+                    Ok(()) => return,
+                    Err(error) => {
+                        last_error = error;
+                        core.driver.set_state(
+                            &core,
+                            "reconnecting",
+                            format!("{last_error} Retrying automatically…"),
+                        );
+                    }
+                }
+            }
+            lock(&core.driver.inner).retrying = false;
+            core.driver.set_state(&core, "not_installed", last_error);
+        });
     }
 
     fn stop(&self) {
         let (child, pending) = {
             let mut inner = lock(&self.inner);
             inner.stopping = true;
+            inner.retrying = false;
             let child = inner.child.take();
             let pending = inner
                 .pending
@@ -2959,6 +3037,19 @@ fn device_status(state: State<'_, AppState>) -> Value {
 }
 
 #[tauri::command]
+fn ensure_driver(state: State<'_, AppState>) -> Value {
+    let core = state.0.clone();
+    let should_start = {
+        let inner = lock(&core.driver.inner);
+        inner.child.is_none() && !inner.launching && !inner.retrying
+    };
+    if should_start && let Err(error) = core.driver.start(core.clone()) {
+        core.driver.schedule_retry(core.clone(), error);
+    }
+    core.device_status()
+}
+
+#[tauri::command]
 fn load_config(state: State<'_, AppState>) -> Value {
     lock(&state.0.active_config).clone().unwrap_or(Value::Null)
 }
@@ -3142,6 +3233,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             device_status,
+            ensure_driver,
             load_config,
             autostart_status,
             set_autostart_enabled,
@@ -3169,7 +3261,7 @@ pub fn run() {
             }
             start_agent_monitor(core.clone());
             if let Err(error) = core.driver.start(core.clone()) {
-                core.driver.set_state(&core, "not_installed", error);
+                core.driver.schedule_retry(core.clone(), error);
             }
             let start_hidden = starts_hidden(std::env::args_os().skip(1));
             if !start_hidden && let Some(window) = app.get_webview_window("main") {
@@ -3220,6 +3312,18 @@ mod tests {
             .expect("valid desktop entry");
         assert!(entry.contains("Exec=\"/opt/N1 Studio/bin/n1\\$studio\" --hidden"));
         assert!(entry.contains(AUTOSTART_MANAGED_MARKER));
+        assert_eq!(
+            production_executable_candidate(Path::new(
+                "/home/user/project/src-tauri/target/debug/n1-stream-controller-studio"
+            )),
+            Some(PathBuf::from(
+                "/home/user/project/src-tauri/target/release/n1-stream-controller-studio"
+            ))
+        );
+        assert_eq!(
+            production_executable_candidate(Path::new("/usr/bin/n1-stream-controller-studio")),
+            None
+        );
         assert!(autostart_entry(Path::new("relative/n1-studio")).is_err());
         assert!(starts_hidden(["--hidden"]));
         assert!(!starts_hidden(["--safe-mode"]));
