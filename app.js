@@ -67,11 +67,12 @@ const backend = {
         screenshotClipboard: action?.screenshotClipboard === true,
         agent: action?.agent || null,
         agentWorkflow: action?.agentWorkflow || null,
-        agentPrompt: action?.agentWorkflow === "prompt"
-          ? String(action?.agentPrompt || "").slice(0, 1000)
+        agentPrompt: action?.agentWorkflow
+          ? String(action?.agentPrompt || "").slice(0, 4000)
           : null,
         agentSlot: Number(action?.agentSlot) || null,
-        projectDirectory: action?.projectDirectory || null
+        projectDirectory: action?.projectDirectory || null,
+        agentSession: action?.agentSession || null
       }
     });
   },
@@ -290,6 +291,13 @@ const agentPromptDefinition = [
   "#ff9f1c",
   "Send a saved prompt to the selected AI model"
 ];
+const agentUsageDefinition = [
+  "usage",
+  "AI USAGE",
+  "stats",
+  "#38d996",
+  "Show usage in the active AI session"
+];
 
 const agentDefinitions = {
   codex: { label: "Codex", icon: "codexAgent", color: "#37b7ff" },
@@ -304,6 +312,8 @@ function agentDefinition(agent) {
 function agentWorkflowDefinition(workflow) {
   return workflow === agentPromptDefinition[0]
     ? agentPromptDefinition
+    : workflow === agentUsageDefinition[0]
+      ? agentUsageDefinition
     : agentWorkflowDefinitions.find(([id]) => id === workflow) || null;
 }
 
@@ -378,6 +388,19 @@ agentWorkflowDefinitions.forEach(([workflow, title, icon, color, description]) =
     category: "ai",
     group: "AI Workflows"
   });
+});
+actionCatalog.push({
+  id: "ai-agent",
+  catalogId: "ai-usage",
+  name: agentUsageDefinition[1],
+  subtitle: "AI action · /usage",
+  description: agentUsageDefinition[4],
+  agent: "codex",
+  agentWorkflow: agentUsageDefinition[0],
+  icon: agentUsageDefinition[2],
+  color: agentUsageDefinition[3],
+  category: "ai",
+  group: "AI Actions"
 });
 
 function agentProfileLayout(agent) {
@@ -559,6 +582,8 @@ const legacyLayoutStorageKey = "n1-studio-layouts";
 const pageStorageKey = "n1-stream-controller-studio-pages";
 const pageLayouts = Object.create(null);
 const currentPageByProfile = Object.create(null);
+const activeAgentSessionByProfile = Object.create(null);
+const agentPromptOverridesByProfile = Object.create(null);
 let restoredSavedLayouts = false;
 let restoredDefaultProfilesVersion = 0;
 
@@ -622,6 +647,29 @@ try {
     if (savedPageState.profile && pageLayouts[savedPageState.profile]) {
       currentProfile = savedPageState.profile;
     }
+    if (savedPageState.activeAgentSessions && typeof savedPageState.activeAgentSessions === "object") {
+      Object.entries(savedPageState.activeAgentSessions).forEach(([profile, title]) => {
+        if (isValidProfileId(profile) && typeof title === "string" && title.trim()) {
+          activeAgentSessionByProfile[profile] = title.trim().slice(0, 18);
+        }
+      });
+    }
+    if (savedPageState.agentPromptOverrides && typeof savedPageState.agentPromptOverrides === "object") {
+      Object.entries(savedPageState.agentPromptOverrides).forEach(([profile, sessions]) => {
+        if (!isValidProfileId(profile) || !sessions || typeof sessions !== "object") return;
+        agentPromptOverridesByProfile[profile] = {};
+        Object.entries(sessions).slice(0, 32).forEach(([session, overrides]) => {
+          if (!session.trim() || !overrides || typeof overrides !== "object") return;
+          const valid = {};
+          Object.entries(overrides).slice(0, 16).forEach(([workflow, prompt]) => {
+            if (typeof prompt === "string" && prompt.length <= 4000) {
+              valid[workflow] = prompt;
+            }
+          });
+          if (Object.keys(valid).length) agentPromptOverridesByProfile[profile][session] = valid;
+        });
+      });
+    }
   } else {
     const savedLayoutJson =
       localStorage.getItem(layoutStorageKey) || localStorage.getItem(legacyLayoutStorageKey);
@@ -678,13 +726,15 @@ function replaceActiveLayout(layout) {
 function persistPages() {
   try {
     localStorage.setItem(pageStorageKey, JSON.stringify({
-      version: 3,
+      version: 4,
       defaultProfilesVersion,
       profile: currentProfile,
       current: currentPageByProfile,
       names: profileNames,
       order: profileOrder,
-      profiles: pageLayouts
+      profiles: pageLayouts,
+      activeAgentSessions: activeAgentSessionByProfile,
+      agentPromptOverrides: agentPromptOverridesByProfile
     }));
   } catch {
     // Local drafts are a convenience; storage failures must not block editing.
@@ -798,6 +848,8 @@ function createProfile(name, duplicateProfileId = null) {
 }
 
 function clearProfileRuntimeState(profileId) {
+  delete activeAgentSessionByProfile[profileId];
+  delete agentPromptOverridesByProfile[profileId];
   const prefix = `${profileId}:`;
   for (const stateKey of runtimeVisualStates.keys()) {
     if (stateKey.startsWith(prefix)) runtimeVisualStates.delete(stateKey);
@@ -1012,7 +1064,7 @@ function soundWaveformMarkup(sound, playback) {
 
 function agentModelIndicatorMarkup(key) {
   if (key?.id !== "ai-agent" || isAgentSession(key)) return "";
-  const definition = agentDefinition(key.agent);
+  const definition = agentDefinition(materializeAgentAction(key, currentProfile).agent);
   return `
     <span
       class="agent-model-indicator"
@@ -1029,6 +1081,13 @@ function agentStatusFor(agent) {
     slots: new Set(),
     sessions: new Set()
   };
+}
+
+function agentUsageSummaryMarkup() {
+  return ["codex", "claude", "gemini"].map((agent) => {
+    const status = agentStatusFor(agent);
+    return `<span title="${agentDefinition(agent).label} CLI status">${agentDefinition(agent).label.slice(0, 1)}:${status.count ? "ON" : "—"}</span>`;
+  }).join(" ");
 }
 
 function agentSessionKey(label, projectDirectory = "") {
@@ -1049,12 +1108,15 @@ function agentKeyIsActive(key) {
 function agentVisualKey(key) {
   if (!key?.agentMonitor) return key;
   const active = agentKeyIsActive(key);
+  const selected = isAgentSession(key)
+    && sessionTitleKey(activeAgentSession(currentProfile)?.title) === sessionTitleKey(key.title);
   return {
     ...key,
-    color: active
+    color: active || selected
       ? safeColor(key.activeColor, key.color)
       : safeColor(key.idleColor, "#343c40"),
-    agentActive: active
+    agentActive: active,
+    agentSelected: selected
   };
 }
 
@@ -1121,7 +1183,7 @@ async function flushAgentVisualSync() {
       if (currentProfile !== syncProfile || activePageIndex() !== syncPage) break;
       const visualKey = agentVisualKey(key);
       const stateKey = visualStateKey(syncProfile, syncPage, index);
-      const state = `${visualKey.agentActive ? "on" : "off"}:${visualKey.color}`;
+      const state = `${visualKey.agentActive ? "on" : "off"}:${visualKey.agentSelected ? "selected" : "idle"}:${visualKey.color}`;
       if (!force && agentHardwareStates.get(stateKey) === state) continue;
       await backend.syncKeyVisual(index + 1, structuredClone(visualKey));
       agentHardwareStates.set(stateKey, state);
@@ -1143,6 +1205,7 @@ function keyScreenMarkup(key, secondary = false, playback = null) {
   const color = safeColor(visualKey.color);
   const isAgentMonitored = Boolean(key.agentMonitor);
   const isAgentActive = isAgentMonitored && visualKey.agentActive;
+  const isAgentSelected = isAgentMonitored && visualKey.agentSelected;
   const screenClass = [
     "key-screen",
     previewUrl ? "has-custom-icon" : "",
@@ -1150,17 +1213,21 @@ function keyScreenMarkup(key, secondary = false, playback = null) {
     !previewUrl && !isSound ? "has-device-symbol" : "",
     playback ? "sound-playing" : "",
     isAgentMonitored ? "agent-monitored" : "",
-    isAgentMonitored ? (isAgentActive ? "agent-active" : "agent-idle") : ""
+    isAgentMonitored ? (isAgentActive ? "agent-active" : "agent-idle") : "",
+    isAgentSelected ? "agent-selected" : ""
   ].filter(Boolean).join(" ");
   const soundMarkup = isSound ? soundWaveformMarkup(key.sound, playback) : "";
   const modelMarkup = agentModelIndicatorMarkup(key);
   const agentMarkup = isAgentMonitored
     ? `<span class="agent-state-dot" title="${isAgentActive ? "Agent running" : "Agent idle"}"></span>`
     : "";
+  const usageMarkup = key.agentWorkflow === "usage"
+    ? `<span class="agent-usage-summary">${agentUsageSummaryMarkup()}</span>`
+    : "";
   if (previewUrl) {
-    return `<div class="${screenClass}" style="--key-color:${color}"><img src="${escapeHtml(previewUrl)}" alt="" draggable="false">${soundMarkup}${modelMarkup}${agentMarkup}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
+    return `<div class="${screenClass}" style="--key-color:${color}"><img src="${escapeHtml(previewUrl)}" alt="" draggable="false">${soundMarkup}${modelMarkup}${agentMarkup}${usageMarkup}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
   }
-  return `<div class="${screenClass}" style="--key-color:${color}">${isSound ? "" : deviceIconMarkup(key.icon)}${soundMarkup}${modelMarkup}${agentMarkup}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
+  return `<div class="${screenClass}" style="--key-color:${color}">${isSound ? "" : deviceIconMarkup(key.icon)}${soundMarkup}${modelMarkup}${agentMarkup}${usageMarkup}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
 }
 
 function escapeHtml(value) {
@@ -1518,10 +1585,11 @@ function updateInspector() {
     : assignedKey ? "active" : "empty";
   document.querySelector("#clearKeyButton").disabled = !assignedKey;
   document.querySelector("#duplicateButton").disabled = !assignedKey;
+  const effectiveKey = key?.id === "ai-agent" ? materializeAgentAction(key, currentProfile) : key;
   const missingAgentPrompt = (
-    key?.id === "ai-agent"
-    && key.agentWorkflow === "prompt"
-    && !String(key.agentPrompt || "").trim()
+    effectiveKey?.id === "ai-agent"
+    && effectiveKey.agentWorkflow === "prompt"
+    && !String(effectiveKey.agentPrompt || "").trim()
   );
   document.querySelector("#testActionButton").disabled =
     !key || (key.id === "sound" && !key.sound?.id) || missingAgentPrompt;
@@ -1538,7 +1606,7 @@ function updateInspector() {
   const agentSettings = document.querySelector("#agentSettings");
   agentSettings.hidden = !isAgentAction;
   if (isAgentAction) {
-    const agent = key.agent || "codex";
+    const agent = effectiveKey.agent || "codex";
     const status = agentStatusFor(agent);
     const agentLabel = { codex: "Codex", claude: "Claude", gemini: "Gemini" }[agent] || "AI";
     const workflowLabel = {
@@ -1553,7 +1621,8 @@ function updateInspector() {
       explain: "Explain the codebase",
       docs: "Improve documentation",
       ship: "Final ship check",
-      prompt: "Run saved prompt"
+      prompt: "Run saved prompt",
+      usage: "Show AI usage"
     }[key.agentWorkflow] || "Agent workflow";
     const definition = agentDefinition(agent);
     const agentColor = definition.color;
@@ -1566,9 +1635,7 @@ function updateInspector() {
     statusElement.dataset.state = status.count ? "running" : "idle";
     document.querySelector("#agentRuntimeNote").textContent = isAgentSession(key)
       ? `“${key.title}” is this session’s unique ID; press it again to focus its terminal.`
-      : key.agentWorkflow === "prompt"
-        ? "Sends this button’s saved prompt as a literal CLI argument in a new terminal."
-        : "Opens safely in the system-configured Linux terminal.";
+      : "Injects into the active session’s CLI window; no extra terminal is opened.";
     document.querySelectorAll("[data-agent-model]").forEach((button) => {
       const buttonAgent = button.dataset.agentModel;
       const buttonDefinition = agentDefinition(buttonAgent);
@@ -1576,36 +1643,59 @@ function updateInspector() {
       button.querySelector(".agent-model-glyph").innerHTML = iconMarkup(buttonDefinition.icon);
       button.classList.toggle("active", buttonAgent === agent);
       button.setAttribute("aria-checked", String(buttonAgent === agent));
-      button.disabled = !assignedKey;
+      button.disabled = !assignedKey || !isAgentSession(key);
     });
+    const sessions = agentSessionsForProfile(currentProfile);
+    const activeSession = activeAgentSession(currentProfile);
+    const sessionSelect = document.querySelector("#agentActiveSession");
+    sessionSelect.replaceChildren(...sessions.map(({ key: sessionKey }) => {
+      const option = document.createElement("option");
+      option.value = sessionKey.title;
+      option.textContent = `${sessionKey.title} · ${agentDefinition(sessionKey.agent).label}`;
+      return option;
+    }));
+    sessionSelect.value = activeSession?.title || "";
+    sessionSelect.disabled = !sessions.length;
+    document.querySelector("#activateAgentSession").disabled = !activeSession;
+    document.querySelector("#agentSessionNote").textContent = activeSession
+      ? `Workflows and prompts target “${activeSession.title}” (${activeSession.projectDirectory || "Studio project"}).`
+      : "Add an AI Session before using workflows or prompts.";
     const promptSetting = document.querySelector("#agentPromptSetting");
-    const isPromptAction = key.agentWorkflow === "prompt";
-    promptSetting.hidden = !isPromptAction;
-    if (isPromptAction) {
+    const isWorkflowAction = key.agentWorkflow !== "new" && key.agentWorkflow !== "usage";
+    promptSetting.hidden = !isWorkflowAction;
+    if (isWorkflowAction) {
       const prompt = String(key.agentPrompt || "");
       const promptInput = document.querySelector("#agentPrompt");
       promptInput.value = prompt;
-      promptInput.disabled = !assignedKey;
-      document.querySelector("#agentPromptCount").textContent = `${prompt.length}/1000`;
-      promptSetting.classList.toggle("empty", !prompt.trim());
+      promptInput.disabled = !assignedKey || !activeSession;
+      document.querySelector("#agentPromptLabel").textContent = key.agentWorkflow === "prompt"
+        ? "Prompt for active session" : "Prompt override";
+      document.querySelector("#agentPromptCount").textContent = `${prompt.length}/4000`;
+      promptSetting.classList.toggle("empty", key.agentWorkflow === "prompt" && !prompt.trim());
       document.querySelector("#agentPromptNote").textContent = prompt.trim()
         ? "Sent exactly as written—shell characters are not evaluated."
-        : "Add a prompt before testing or pressing this key.";
+        : key.agentWorkflow === "prompt"
+          ? "Add a prompt before testing or pressing this key."
+          : "Empty uses the built-in workflow prompt.";
     }
-    const projectDirectory = String(key.projectDirectory || "");
+    const projectDirectory = String(effectiveKey.projectDirectory || "");
     const projectInput = document.querySelector("#agentProjectDirectory");
     const projectField = document.querySelector("#agentProjectField");
     projectInput.value = projectDirectory;
-    projectInput.disabled = !assignedKey;
-    document.querySelector("#chooseAgentProject").disabled = !assignedKey;
+    projectInput.disabled = !assignedKey || !isAgentSession(key);
+    document.querySelector("#chooseAgentProject").disabled = !assignedKey || !isAgentSession(key);
     document.querySelector("#clearAgentProject").disabled =
-      !assignedKey || !projectDirectory;
+      !assignedKey || !isAgentSession(key) || !projectDirectory;
+    document.querySelector("#agentProjectDirectory").closest(".agent-project-setting").querySelector(".label-row label").textContent =
+      isAgentSession(key) ? "Project directory" : "Active session directory";
     projectField.classList.remove("invalid", "picking");
     const projectNote = document.querySelector("#agentProjectNote");
     projectNote.classList.remove("error");
     projectNote.textContent = projectDirectory
-      ? "This button opens the agent with this folder as its working project."
-      : "Empty uses the Studio project directory.";
+      ? (isAgentSession(key)
+        ? "This session opens with this folder as its working project."
+        : "Inherited from the active AI session.")
+      : (isAgentSession(key) ? "Empty uses the Studio project directory." : "No active AI session selected.");
   }
   const screenshotClipboardToggle = document.querySelector("#screenshotClipboardToggle");
   screenshotClipboardToggle.checked = key?.screenshotClipboard === true;
@@ -1763,6 +1853,121 @@ function isAgentSession(action) {
   return action?.id === "ai-agent" && action.agentWorkflow === "new";
 }
 
+function agentSessionsForProfile(profile = currentProfile) {
+  const sessions = [];
+  pageLayouts[profile]?.forEach((page, pageIndex) => {
+    page.forEach((key, keyIndex) => {
+      if (isAgentSession(key)) sessions.push({ key, pageIndex, keyIndex });
+    });
+  });
+  return sessions;
+}
+
+function sessionTitleKey(title) {
+  return String(title || "").trim().toLocaleLowerCase();
+}
+
+function activeAgentSessionForProfile(profile = currentProfile) {
+  const sessions = agentSessionsForProfile(profile);
+  if (!sessions.length) return null;
+  const requested = sessionTitleKey(activeAgentSessionByProfile[profile]);
+  const active = sessions.find(({ key }) => sessionTitleKey(key.title) === requested);
+  if (active) return active;
+  activeAgentSessionByProfile[profile] = sessions[0].key.title;
+  return sessions[0];
+}
+
+function activeAgentSession(profile = currentProfile) {
+  return activeAgentSessionForProfile(profile)?.key || null;
+}
+
+async function activateAgentSession(title, { focus = false } = {}) {
+  const session = agentSessionsForProfile(currentProfile).find(({ key }) => key.title === title);
+  if (!session) {
+    showToast("No AI session available", "Add an AI Session key first.");
+    return;
+  }
+  activeAgentSessionByProfile[currentProfile] = session.key.title;
+  persistPages();
+  renderKeys();
+  renderActions();
+  updateInspector();
+  requestDeviceSync();
+  if (focus) {
+    try {
+      const result = await backend.testAction(session.keyIndex + 1, session.key);
+      if (!result.ok) throw new Error(result.error || "Session focus failed");
+      showToast("AI session active", `${session.key.title} is now at the front.`);
+    } catch (error) {
+      showToast("Could not focus AI session", error.message || String(error));
+    }
+  }
+}
+
+function promptOverrideForSession(profile, sessionTitle, workflow) {
+  return String(
+    agentPromptOverridesByProfile[profile]?.[sessionTitle]?.[workflow] || ""
+  );
+}
+
+function setPromptOverrideForSession(profile, sessionTitle, workflow, prompt) {
+  if (!agentPromptOverridesByProfile[profile]) agentPromptOverridesByProfile[profile] = {};
+  if (!agentPromptOverridesByProfile[profile][sessionTitle]) {
+    agentPromptOverridesByProfile[profile][sessionTitle] = {};
+  }
+  const overrides = agentPromptOverridesByProfile[profile][sessionTitle];
+  if (prompt.trim()) overrides[workflow] = prompt;
+  else delete overrides[workflow];
+  if (!Object.keys(overrides).length) delete agentPromptOverridesByProfile[profile][sessionTitle];
+  if (!Object.keys(agentPromptOverridesByProfile[profile]).length) {
+    delete agentPromptOverridesByProfile[profile];
+  }
+}
+
+function materializeAgentAction(action, profile = currentProfile) {
+  if (!action || action.id !== "ai-agent" || isAgentSession(action)) return structuredClone(action);
+  const session = activeAgentSession(profile);
+  if (!session) return structuredClone(action);
+  const workflow = action.agentWorkflow || "new";
+  const prompt = promptOverrideForSession(profile, session.title, workflow);
+  return {
+    ...structuredClone(action),
+    agent: session.agent,
+    agentMonitor: session.agent,
+    projectDirectory: session.projectDirectory || null,
+    agentSession: {
+      agent: session.agent,
+      title: session.title,
+      projectDirectory: session.projectDirectory || null
+    },
+    agentPrompt: prompt || null
+  };
+}
+
+function materializeAgentLayout(layout, profile = currentProfile) {
+  return layout.map((action) => materializeAgentAction(action, profile));
+}
+
+function migrateAgentContext(profile) {
+  const sessions = agentSessionsForProfile(profile);
+  if (!sessions.length) return;
+  const active = activeAgentSession(profile) || sessions[0].key;
+  activeAgentSessionByProfile[profile] ||= active.title;
+  pageLayouts[profile]?.forEach((page) => page.forEach((key) => {
+    if (!key || key.id !== "ai-agent" || isAgentSession(key)) return;
+    const workflow = key.agentWorkflow || "prompt";
+    if (key.agentPrompt && !promptOverrideForSession(profile, active.title, workflow)) {
+      setPromptOverrideForSession(profile, active.title, workflow, String(key.agentPrompt));
+    }
+    delete key.agentPrompt;
+    delete key.agentSession;
+    if (key.projectDirectory && !active.projectDirectory) {
+      active.projectDirectory = key.projectDirectory;
+    }
+    delete key.projectDirectory;
+  }));
+}
+
 function agentForProfile(profile = currentProfile) {
   return {
     "codex-cli": "codex",
@@ -1816,6 +2021,7 @@ function normalizeStoredAgentActions() {
         usedSessionTitles.add(key.title.trim().toLocaleLowerCase());
       });
     });
+    migrateAgentContext(profile);
   });
 }
 
@@ -1926,7 +2132,7 @@ async function flushDeviceSync() {
     profileName: profileNames[syncProfile] || fallbackProfileName(syncProfile),
     page: syncPage + 1,
     brightness: Number(brightness.value),
-    keys: structuredClone(activeLayout())
+    keys: materializeAgentLayout(activeLayout(), syncProfile)
   };
   autoSyncQueued = false;
   autoSyncAnnounce = false;
@@ -2254,15 +2460,18 @@ function selectedAgentKey() {
 const agentPromptInput = document.querySelector("#agentPrompt");
 agentPromptInput.addEventListener("input", (event) => {
   const key = selectedAgentKey();
-  if (key?.agentWorkflow !== "prompt") return;
-  const prompt = event.target.value;
-  key.agentPrompt = prompt;
-  document.querySelector("#agentPromptCount").textContent = `${prompt.length}/1000`;
-  document.querySelector("#agentPromptSetting").classList.toggle("empty", !prompt.trim());
+  const session = activeAgentSession(currentProfile);
+  if (!key || key.agentWorkflow === "new" || !session) return;
+  const prompt = event.target.value.slice(0, 4000);
+  setPromptOverrideForSession(currentProfile, session.title, key.agentWorkflow, prompt);
+  document.querySelector("#agentPromptCount").textContent = `${prompt.length}/4000`;
+  document.querySelector("#agentPromptSetting").classList.toggle("empty", key.agentWorkflow === "prompt" && !prompt.trim());
   document.querySelector("#agentPromptNote").textContent = prompt.trim()
     ? "Sent exactly as written—shell characters are not evaluated."
-    : "Add a prompt before testing or pressing this key.";
-  document.querySelector("#testActionButton").disabled = !prompt.trim();
+    : key.agentWorkflow === "prompt"
+      ? "Add a prompt before testing or pressing this key."
+      : "Empty uses the built-in workflow prompt.";
+  document.querySelector("#testActionButton").disabled = key.agentWorkflow === "prompt" && !prompt.trim();
   requestDeviceSync();
 });
 
@@ -2270,7 +2479,7 @@ document.querySelectorAll("[data-agent-model]").forEach((button) => {
   button.addEventListener("click", () => {
     const key = selectedAgentKey();
     const agent = button.dataset.agentModel;
-    if (!key || !agentDefinitions[agent] || key.agent === agent) return;
+    if (!key || !isAgentSession(key) || !agentDefinitions[agent] || key.agent === agent) return;
     const shouldRenumber = isAgentSession(key) && hasAutomaticAgentSessionTitle(key);
     const nextTitle = shouldRenumber ? nextAgentSessionTitle(agent, key) : null;
     updateKey({
@@ -2295,7 +2504,7 @@ function showAgentProjectError(message) {
 
 async function saveAgentProjectDirectory(directory) {
   const key = selectedAgentKey();
-  if (!key) return;
+  if (!key || !isAgentSession(key)) return;
   const value = String(directory || "").trim();
   if (!value) {
     updateKey({ projectDirectory: null });
@@ -2333,7 +2542,7 @@ agentProjectInput.addEventListener("keydown", (event) => {
 
 document.querySelector("#chooseAgentProject").addEventListener("click", async () => {
   const key = selectedAgentKey();
-  if (!key) return;
+  if (!key || !isAgentSession(key)) return;
   const field = document.querySelector("#agentProjectField");
   const button = document.querySelector("#chooseAgentProject");
   field.classList.remove("invalid");
@@ -2355,8 +2564,15 @@ document.querySelector("#chooseAgentProject").addEventListener("click", async ()
 });
 
 document.querySelector("#clearAgentProject").addEventListener("click", () => {
-  if (!selectedAgentKey()) return;
+  if (!isAgentSession(selectedAgentKey())) return;
   void saveAgentProjectDirectory("");
+});
+
+document.querySelector("#agentActiveSession").addEventListener("change", (event) => {
+  void activateAgentSession(event.target.value, { focus: true });
+});
+document.querySelector("#activateAgentSession").addEventListener("click", () => {
+  void activateAgentSession(document.querySelector("#agentActiveSession").value, { focus: true });
 });
 
 document.querySelector("#chooseSoundFile").addEventListener("click", () => {
@@ -2490,6 +2706,15 @@ document.querySelector("#testActionButton").addEventListener("click", async () =
     showToast("Nothing to test", "Select a key or preview an action from the palette.");
     return;
   }
+  const actionToRun = action.id === "ai-agent" ? materializeAgentAction(action, currentProfile) : action;
+  if (action.id === "ai-agent" && action.agentWorkflow !== "new" && !activeAgentSession(currentProfile)) {
+    showToast("No active AI session", "Activate an AI Session before running this workflow.");
+    return;
+  }
+  if (actionToRun.id === "ai-agent" && actionToRun.agentWorkflow === "prompt" && !String(actionToRun.agentPrompt || "").trim()) {
+    showToast("Prompt required", "Add a prompt for the active AI session first.");
+    return;
+  }
   if (
     !shellActionsEnabled &&
     (["launch", "command", "hotkey"].includes(action.id) || action.id?.startsWith("custom-"))
@@ -2526,7 +2751,7 @@ document.querySelector("#testActionButton").addEventListener("click", async () =
     }
   }
   try {
-    const result = await backend.testAction((hasSelection ? selectedIndex : 0) + 1, action);
+    const result = await backend.testAction((hasSelection ? selectedIndex : 0) + 1, actionToRun);
     if (!result.ok) throw new Error(result.error || "Action test failed");
   } catch (error) {
     showToast("Action could not run", error.message);
@@ -2909,6 +3134,13 @@ function handleHardwareEvent(message) {
   if (message.event === "action") {
     const keyIndex = Number(message.key) - 1;
     if (keyIndex >= 0 && keyIndex < 15) {
+      const hardwareKey = activeLayout()?.[keyIndex];
+      if (message.ok && isAgentSession(hardwareKey)) {
+        activeAgentSessionByProfile[currentProfile] = hardwareKey.title;
+        persistPages();
+        updateInspector();
+        requestDeviceSync();
+      }
       if (message.playing) {
         const previousStateKey = soundPlaybackByKey.get(keyIndex);
         if (previousStateKey) soundPlaybackStates.delete(previousStateKey);
@@ -2938,6 +3170,7 @@ function handleHardwareEvent(message) {
     if (message.finished) return;
     let title = message.ok ? "Hardware action triggered" : "Action could not run";
     if (message.focused) title = "Agent window focused";
+    if (message.usage) title = "AI usage requested";
     else if (message.stopped) title = "Sound stopped";
     else if (message.looping) title = "Sound looping";
     else if (message.playing) title = "Sound playing";
@@ -3109,20 +3342,38 @@ async function initializeNativeState() {
     }
   }
   renderPageTabs();
+  renderStartupConnection("connecting", "Restoring saved assets…", "RESTORE");
   await restoreAssetPaths();
+  renderStartupConnection("connecting", "Connecting hardware events…", "EVENTS");
   try {
     await backend.listen(handleHardwareEvent);
   } catch (error) {
     console.error("Native hardware event bridge unavailable", error);
   }
   revealStudio();
+  renderStartupConnection("connecting", "Syncing the active profile…", "SYNC");
   await requestDeviceSync({ immediate: true });
   await detectDevice();
 }
 
 startupRetry.addEventListener("click", () => {
-  void initializeNativeState();
+  void startNativeInitialization();
 });
+
+function startNativeInitialization() {
+  const timeout = wait(15000).then(() => {
+    throw new Error("Native startup timed out after 15 seconds");
+  });
+  return Promise.race([initializeNativeState(), timeout]).catch((error) => {
+    console.error("Native service initialization failed", error);
+    renderStartupConnection(
+      "error",
+      error?.message || "The native service could not finish starting. Studio will keep the retry available.",
+      "RETRY"
+    );
+    startupRetry.hidden = false;
+  });
+}
 
 document.addEventListener("keydown", (event) => {
   const modifier = event.ctrlKey || event.metaKey;
@@ -3148,6 +3399,6 @@ renderActions();
 renderProfileOptions();
 renderPageTabs();
 renderKeys();
-initializeNativeState();
+void startNativeInitialization();
 
 window.addEventListener("beforeunload", persistPages);

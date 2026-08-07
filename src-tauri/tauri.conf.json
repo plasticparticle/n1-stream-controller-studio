@@ -50,7 +50,8 @@
     "linux": {
       "deb": {
         "recommends": [
-          "wmctrl"
+          "wmctrl",
+          "xdotool"
         ]
       }
     }

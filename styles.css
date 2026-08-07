@@ -1419,6 +1419,17 @@ kbd {
   animation: agent-active-breathe 1.8s ease-in-out infinite alternate;
 }
 
+.key-screen.agent-selected {
+  outline: 2px solid var(--key-color);
+  outline-offset: -2px;
+  box-shadow: 0 0 13px color-mix(in srgb, var(--key-color) 42%, transparent);
+}
+
+.key-screen.agent-selected .agent-state-dot {
+  background: var(--key-color);
+  box-shadow: 0 0 7px var(--key-color);
+}
+
 .agent-state-dot {
   position: absolute;
   top: 5px;
@@ -1445,6 +1456,16 @@ kbd {
   box-shadow: 0 0 6px color-mix(in srgb, var(--model-color) 35%, transparent);
   display: grid;
   place-items: center;
+}
+
+.agent-usage-summary {
+  position: absolute;
+  top: 18px;
+  z-index: 3;
+  color: var(--key-color);
+  font: 650 6px "DM Mono", monospace;
+  letter-spacing: .02em;
+  text-shadow: 0 0 7px color-mix(in srgb, var(--key-color) 48%, transparent);
 }
 
 .key-screen .agent-model-indicator svg {
@@ -2504,6 +2525,43 @@ kbd {
 
 .agent-runtime-note {
   margin: 7px 2px 0;
+  color: #687378;
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.agent-session-setting {
+  margin-top: 13px;
+}
+
+.agent-session-setting .label-row button {
+  border: 0;
+  background: transparent;
+  color: var(--agent-color, #37b7ff);
+  font: 650 7px "DM Mono", monospace;
+  letter-spacing: .08em;
+}
+
+.agent-session-setting .label-row button:disabled {
+  opacity: .35;
+}
+
+.agent-session-select-field {
+  margin-top: 7px;
+}
+
+.agent-session-select-field select {
+  width: 100%;
+  padding: 9px 28px 9px 10px;
+  border: 1px solid #293337;
+  border-radius: 8px;
+  background: #090d0f;
+  color: #c7d0cd;
+  font: 650 9px "DM Mono", monospace;
+}
+
+.agent-session-note {
+  margin: 6px 2px 0;
   color: #687378;
   font-size: 8px;
   line-height: 1.45;
