@@ -584,6 +584,7 @@ const pageLayouts = Object.create(null);
 const currentPageByProfile = Object.create(null);
 const activeAgentSessionByProfile = Object.create(null);
 const agentPromptOverridesByProfile = Object.create(null);
+const disabledProfiles = new Set();
 let restoredSavedLayouts = false;
 let restoredDefaultProfilesVersion = 0;
 
@@ -647,6 +648,11 @@ try {
     if (savedPageState.profile && pageLayouts[savedPageState.profile]) {
       currentProfile = savedPageState.profile;
     }
+    if (Array.isArray(savedPageState.disabledProfiles)) {
+      savedPageState.disabledProfiles.forEach((profile) => {
+        if (pageLayouts[profile]) disabledProfiles.add(profile);
+      });
+    }
     if (savedPageState.activeAgentSessions && typeof savedPageState.activeAgentSessions === "object") {
       Object.entries(savedPageState.activeAgentSessions).forEach(([profile, title]) => {
         if (isValidProfileId(profile) && typeof title === "string" && title.trim()) {
@@ -709,6 +715,9 @@ if (!profileOrder.length) {
 }
 
 if (!pageLayouts[currentProfile]) currentProfile = profileOrder[0];
+if (profileOrder.length && profileOrder.every((profile) => disabledProfiles.has(profile))) {
+  disabledProfiles.delete(profileOrder[0]);
+}
 normalizeStoredAgentActions();
 
 function activePageIndex(profile = currentProfile) {
@@ -726,12 +735,13 @@ function replaceActiveLayout(layout) {
 function persistPages() {
   try {
     localStorage.setItem(pageStorageKey, JSON.stringify({
-      version: 4,
+      version: 5,
       defaultProfilesVersion,
       profile: currentProfile,
       current: currentPageByProfile,
       names: profileNames,
       order: profileOrder,
+      disabledProfiles: [...disabledProfiles],
       profiles: pageLayouts,
       activeAgentSessions: activeAgentSessionByProfile,
       agentPromptOverrides: agentPromptOverridesByProfile
@@ -741,17 +751,65 @@ function persistPages() {
   }
 }
 
-function renderProfileOptions() {
-  const select = document.querySelector("#profileSelect");
-  const options = profileOrder.map((profileId) => {
-    const option = document.createElement("option");
-    option.value = profileId;
-    option.textContent = profileNames[profileId];
-    return option;
+function enabledProfileIds() {
+  return profileOrder.filter((profileId) => !disabledProfiles.has(profileId));
+}
+
+function renderProfileManager() {
+  const strip = document.querySelector("#profileStrip");
+  const fragment = document.createDocumentFragment();
+  profileOrder.forEach((profileId, index) => {
+    const isActive = profileId === currentProfile;
+    const isEnabled = !disabledProfiles.has(profileId);
+    const tab = document.createElement("div");
+    tab.className = `profile-tab${isActive ? " active" : ""}${isEnabled ? "" : " rotation-disabled"}`;
+    tab.dataset.profileId = profileId;
+    tab.draggable = true;
+
+    const selectButton = document.createElement("button");
+    selectButton.className = "profile-tab-main";
+    selectButton.type = "button";
+    selectButton.dataset.profileAction = "select";
+    selectButton.setAttribute("role", "tab");
+    selectButton.setAttribute("aria-selected", String(isActive));
+    selectButton.tabIndex = isActive ? 0 : -1;
+    selectButton.title = `${profileNames[profileId]} · drag to reorder`;
+    selectButton.innerHTML = `
+      <span class="profile-grip" aria-hidden="true">
+        <svg viewBox="0 0 10 18"><path d="M2 3h.01M8 3h.01M2 9h.01M8 9h.01M2 15h.01M8 15h.01"></path></svg>
+      </span>
+      <span class="profile-index"></span>
+      <span class="profile-tab-copy"><strong></strong><small></small></span>
+    `;
+    selectButton.querySelector(".profile-index").textContent = String(index + 1).padStart(2, "0");
+    selectButton.querySelector("strong").textContent = profileNames[profileId];
+    selectButton.querySelector("small").textContent = isActive
+      ? isEnabled ? "EDITING · ACTIVE" : "EDITING · OFF"
+      : isEnabled ? "IN ROTATION" : "ROTATION OFF";
+
+    const toggleButton = document.createElement("button");
+    toggleButton.className = "profile-rotation-toggle";
+    toggleButton.type = "button";
+    toggleButton.draggable = false;
+    toggleButton.dataset.profileAction = "toggle";
+    toggleButton.setAttribute("aria-pressed", String(isEnabled));
+    toggleButton.setAttribute(
+      "aria-label",
+      `${isEnabled ? "Deactivate" : "Activate"} ${profileNames[profileId]} in hardware rotation`
+    );
+    toggleButton.title = isEnabled
+      ? "Included in hardware profile rotation"
+      : "Excluded from hardware profile rotation";
+    toggleButton.append(document.createElement("span"));
+    tab.append(selectButton, toggleButton);
+    fragment.append(tab);
   });
-  select.replaceChildren(...options);
-  select.value = currentProfile;
-  document.querySelector("#layoutTitle").textContent = profileNames[currentProfile];
+  strip.replaceChildren(fragment);
+  const enabledCount = enabledProfileIds().length;
+  document.querySelector("#profileRotationCount").textContent =
+    enabledCount === profileOrder.length
+      ? `${enabledCount} ACTIVE`
+      : `${enabledCount} OF ${profileOrder.length} ACTIVE`;
   const profileStatus = document.querySelector("#deviceProfileStatus");
   if (profileStatus) {
     profileStatus.textContent = profileNames[currentProfile].toUpperCase();
@@ -779,6 +837,50 @@ function renderProfileOptions() {
   deleteButton.title = profileOrder.length <= 1
     ? "The only profile cannot be deleted"
     : "Delete current profile";
+  strip.querySelector(".profile-tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function toggleProfileRotation(profileId) {
+  if (!pageLayouts[profileId]) return;
+  const isEnabled = !disabledProfiles.has(profileId);
+  if (isEnabled && enabledProfileIds().length <= 1) {
+    showToast("One active profile required", "Hardware rotation needs at least one active profile.");
+    return;
+  }
+  if (isEnabled) disabledProfiles.add(profileId);
+  else disabledProfiles.delete(profileId);
+  renderProfileManager();
+  persistPages();
+  showToast(
+    isEnabled ? "Profile deactivated" : "Profile activated",
+    isEnabled
+      ? `${profileNames[profileId]} stays editable in Studio but is skipped by the hardware button.`
+      : `${profileNames[profileId]} is back in the hardware rotation.`
+  );
+}
+
+function moveProfile(profileId, targetProfileId, placeAfter = false) {
+  if (profileId === targetProfileId) return;
+  const sourceIndex = profileOrder.indexOf(profileId);
+  if (sourceIndex < 0 || !profileOrder.includes(targetProfileId)) return;
+  profileOrder.splice(sourceIndex, 1);
+  const targetIndex = profileOrder.indexOf(targetProfileId);
+  profileOrder.splice(targetIndex + (placeAfter ? 1 : 0), 0, profileId);
+  renderProfileManager();
+  persistPages();
+  showToast("Profile order updated", "The hardware button now follows this rotation order.");
+}
+
+function moveProfileByOffset(profileId, offset) {
+  const sourceIndex = profileOrder.indexOf(profileId);
+  const targetIndex = sourceIndex + offset;
+  if (sourceIndex < 0 || targetIndex < 0 || targetIndex >= profileOrder.length) return;
+  [profileOrder[sourceIndex], profileOrder[targetIndex]] =
+    [profileOrder[targetIndex], profileOrder[sourceIndex]];
+  renderProfileManager();
+  persistPages();
+  document.querySelector(`.profile-tab[data-profile-id="${profileId}"] .profile-tab-main`)?.focus();
+  showToast("Profile order updated", "The hardware button now follows this rotation order.");
 }
 
 function activateProfile(profileId, { sync = true } = {}) {
@@ -790,7 +892,7 @@ function activateProfile(profileId, { sync = true } = {}) {
   history = [];
   future = [];
   updateHistoryButtons();
-  renderProfileOptions();
+  renderProfileManager();
   renderPageTabs();
   renderKeys();
   if (sync) requestDeviceSync({ immediate: true });
@@ -836,6 +938,7 @@ function createProfile(name, duplicateProfileId = null) {
     ? activePageIndex(duplicateProfileId)
     : 0;
   profileNames[profileId] = name;
+  disabledProfiles.delete(profileId);
   profileOrder.push(profileId);
   activateProfile(profileId);
   showToast(
@@ -895,7 +998,7 @@ function resetCurrentProfile() {
   history = [];
   future = [];
   updateHistoryButtons();
-  renderProfileOptions();
+  renderProfileManager();
   renderPageTabs();
   renderKeys();
   void requestDeviceSync({ immediate: true, announce: true });
@@ -929,6 +1032,7 @@ function deleteCurrentProfile() {
   delete pageLayouts[deletedProfile];
   delete currentPageByProfile[deletedProfile];
   delete profileNames[deletedProfile];
+  disabledProfiles.delete(deletedProfile);
   clearProfileRuntimeState(deletedProfile);
 
   const nextProfile = profileOrder[Math.min(deletedIndex, profileOrder.length - 1)];
@@ -2213,14 +2317,24 @@ async function cycleHardwareProfile() {
     showToast("Profile switch in progress", "Wait for the current deck transfer to finish.");
     return;
   }
-  if (profileOrder.length < 2) {
-    showToast("Only one profile", "Create another profile before using the profile button.");
+  const currentIndex = Math.max(0, profileOrder.indexOf(currentProfile));
+  let nextProfile = null;
+  for (let offset = 1; offset <= profileOrder.length; offset += 1) {
+    const candidate = profileOrder[(currentIndex + offset) % profileOrder.length];
+    if (!disabledProfiles.has(candidate)) {
+      nextProfile = candidate;
+      break;
+    }
+  }
+  if (!nextProfile || nextProfile === currentProfile) {
+    showToast(
+      "Only one active profile",
+      "Activate another profile in the rotation strip to use the hardware profile button."
+    );
     return;
   }
 
   hardwarePageSwitching = true;
-  const currentIndex = Math.max(0, profileOrder.indexOf(currentProfile));
-  const nextProfile = profileOrder[(currentIndex + 1) % profileOrder.length];
   activateProfile(nextProfile, { sync: false });
   showToast(
     profileNames[nextProfile],
@@ -2767,8 +2881,73 @@ miniKey.addEventListener("keydown", (event) => {
   if (Number.isInteger(selectedIndex)) void previewSoundKey(selectedIndex);
 });
 
-document.querySelector("#profileSelect").addEventListener("change", (event) => {
-  activateProfile(event.target.value);
+const profileStrip = document.querySelector("#profileStrip");
+let draggedProfileId = null;
+profileStrip.addEventListener("click", (event) => {
+  const action = event.target.closest("[data-profile-action]");
+  const profileId = action?.closest(".profile-tab")?.dataset.profileId;
+  if (!profileId) return;
+  if (action.dataset.profileAction === "toggle") {
+    toggleProfileRotation(profileId);
+    return;
+  }
+  activateProfile(profileId);
+});
+
+profileStrip.addEventListener("keydown", (event) => {
+  if (!(event.ctrlKey && event.shiftKey) || !["ArrowLeft", "ArrowRight"].includes(event.key)) {
+    return;
+  }
+  const profileId = event.target.closest(".profile-tab")?.dataset.profileId;
+  if (!profileId) return;
+  event.preventDefault();
+  moveProfileByOffset(profileId, event.key === "ArrowLeft" ? -1 : 1);
+});
+
+function clearProfileDropIndicators() {
+  profileStrip.querySelectorAll(".drop-before, .drop-after").forEach((tab) => {
+    tab.classList.remove("drop-before", "drop-after");
+  });
+}
+
+profileStrip.addEventListener("dragstart", (event) => {
+  if (event.target.closest("[data-profile-action='toggle']")) {
+    event.preventDefault();
+    return;
+  }
+  const tab = event.target.closest(".profile-tab");
+  if (!tab) return;
+  draggedProfileId = tab.dataset.profileId;
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", draggedProfileId);
+  window.setTimeout(() => tab.classList.add("dragging"), 0);
+});
+
+profileStrip.addEventListener("dragover", (event) => {
+  const tab = event.target.closest(".profile-tab");
+  if (!tab || tab.dataset.profileId === draggedProfileId) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "move";
+  clearProfileDropIndicators();
+  const placeAfter = event.clientX > tab.getBoundingClientRect().left + tab.offsetWidth / 2;
+  tab.classList.add(placeAfter ? "drop-after" : "drop-before");
+});
+
+profileStrip.addEventListener("drop", (event) => {
+  event.preventDefault();
+  const tab = event.target.closest(".profile-tab");
+  const profileId = draggedProfileId || event.dataTransfer.getData("text/plain");
+  if (tab && profileId) {
+    moveProfile(profileId, tab.dataset.profileId, tab.classList.contains("drop-after"));
+  }
+  clearProfileDropIndicators();
+  draggedProfileId = null;
+});
+
+profileStrip.addEventListener("dragend", () => {
+  clearProfileDropIndicators();
+  profileStrip.querySelectorAll(".dragging").forEach((tab) => tab.classList.remove("dragging"));
+  draggedProfileId = null;
 });
 
 undoButton.addEventListener("click", () => {
@@ -2968,7 +3147,7 @@ function closeCustomActionDialog() {
 }
 
 function openProfileDialog(mode, trigger) {
-  if (profileOrder.length >= maxProfiles) {
+  if (mode !== "rename" && profileOrder.length >= maxProfiles) {
     showToast("Profile limit reached", `Studio supports up to ${maxProfiles} profiles.`);
     return;
   }
@@ -2976,19 +3155,22 @@ function openProfileDialog(mode, trigger) {
   profileDialogSource = currentProfile;
   profileDialogTrigger = trigger;
   const isDuplicate = mode === "duplicate";
+  const isRename = mode === "rename";
   document.querySelector("#profileDialogKicker").textContent =
-    isDuplicate ? "DUPLICATE PROFILE" : "NEW PROFILE";
+    isRename ? "RENAME PROFILE" : isDuplicate ? "DUPLICATE PROFILE" : "NEW PROFILE";
   document.querySelector("#profileDialogTitle").textContent =
-    isDuplicate ? "Duplicate this profile" : "Create a profile";
-  document.querySelector("#profileDialogDescription").textContent = isDuplicate
-    ? "Every page, action, icon, and sound setting will be copied."
-    : "Start with one empty page. You can add actions after creating it.";
+    isRename ? "Rename this profile" : isDuplicate ? "Duplicate this profile" : "Create a profile";
+  document.querySelector("#profileDialogDescription").textContent = isRename
+    ? "Update the name shown in Studio without changing its pages or actions."
+    : isDuplicate
+      ? "Every page, action, icon, and sound setting will be copied."
+      : "Start with one empty page. You can add actions after creating it.";
   document.querySelector("#profileDialogSubmit").textContent =
-    isDuplicate ? "Duplicate profile" : "Create profile";
+    isRename ? "Save name" : isDuplicate ? "Duplicate profile" : "Create profile";
   const nameInput = document.querySelector("#profileName");
-  nameInput.value = uniqueProfileName(
-    isDuplicate ? `${profileNames[currentProfile]} Copy` : "New Profile"
-  );
+  nameInput.value = isRename
+    ? profileNames[currentProfile]
+    : uniqueProfileName(isDuplicate ? `${profileNames[currentProfile]} Copy` : "New Profile");
   nameInput.setCustomValidity("");
   const dialog = document.querySelector("#profileDialog");
   dialog.classList.add("open");
@@ -3014,6 +3196,9 @@ document.querySelector("#addProfileButton").addEventListener("click", (event) =>
 document.querySelector("#duplicateProfileButton").addEventListener("click", (event) => {
   openProfileDialog("duplicate", event.currentTarget);
 });
+document.querySelector(".name-edit").addEventListener("click", (event) => {
+  openProfileDialog("rename", event.currentTarget);
+});
 document.querySelector("#resetProfileButton").addEventListener("click", resetCurrentProfile);
 document.querySelector("#deleteProfileButton").addEventListener("click", deleteCurrentProfile);
 document.querySelector("#profileDialogClose").addEventListener("click", closeProfileDialog);
@@ -3028,7 +3213,9 @@ document.querySelector("#profileForm").addEventListener("submit", (event) => {
   const nameInput = document.querySelector("#profileName");
   const name = nameInput.value.trim();
   const duplicateName = profileOrder.some(
-    (profileId) => profileNames[profileId].toLocaleLowerCase() === name.toLocaleLowerCase()
+    (profileId) =>
+      !(profileDialogMode === "rename" && profileId === profileDialogSource)
+      && profileNames[profileId].toLocaleLowerCase() === name.toLocaleLowerCase()
   );
   if (duplicateName) {
     nameInput.setCustomValidity("Choose a unique profile name.");
@@ -3036,6 +3223,22 @@ document.querySelector("#profileForm").addEventListener("submit", (event) => {
     return;
   }
   if (!name) return;
+  if (profileDialogMode === "rename") {
+    const renamedProfile = profileDialogSource;
+    if (!pageLayouts[renamedProfile]) return;
+    const previousName = profileNames[renamedProfile];
+    profileNames[renamedProfile] = name.slice(0, maxProfileNameLength);
+    renderProfileManager();
+    persistPages();
+    requestDeviceSync({ immediate: true });
+    event.target.reset();
+    closeProfileDialog();
+    showToast(
+      "Profile renamed",
+      `“${previousName}” is now “${profileNames[renamedProfile]}”.`
+    );
+    return;
+  }
   if (createProfile(
     name.slice(0, maxProfileNameLength),
     profileDialogMode === "duplicate" ? profileDialogSource : null
@@ -3334,7 +3537,7 @@ async function initializeNativeState() {
         pageLayouts[profile][pageIndex] = config.keys;
         currentPageByProfile[profile] = pageIndex;
         currentProfile = profile;
-        renderProfileOptions();
+        renderProfileManager();
         persistPages();
       }
     } catch {
@@ -3396,7 +3599,7 @@ document.addEventListener("keydown", (event) => {
 
 renderBuildInfo();
 renderActions();
-renderProfileOptions();
+renderProfileManager();
 renderPageTabs();
 renderKeys();
 void startNativeInitialization();
