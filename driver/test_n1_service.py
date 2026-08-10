@@ -31,6 +31,21 @@ class FakeDevice:
 
 
 class DriverLifecycleTests(unittest.TestCase):
+    def test_transport_health_reports_stale_or_missing_device(self):
+        original = n1_service._device
+        try:
+            n1_service._device = None
+            self.assertFalse(n1_service.device_transport_is_ready())
+
+            device = FakeDevice()
+            n1_service._device = device
+            self.assertTrue(n1_service.device_transport_is_ready())
+
+            device.transport.can_write = lambda: False
+            self.assertFalse(n1_service.device_transport_is_ready())
+        finally:
+            n1_service._device = original
+
     def test_driver_lock_allows_only_one_usb_owner(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             lock_path = Path(temp_dir) / "driver.lock"
@@ -183,6 +198,36 @@ class DisplayCommitTests(unittest.TestCase):
             device.calls,
             [("refresh",), ("refresh",), ("refresh",)],
         )
+
+    def test_first_layout_after_connect_is_replayed_after_device_settles(self):
+        result = {"written": 5, "animated": 0, "brightness": 86, "page": 1}
+        with (
+            patch.object(
+                n1_service,
+                "_sync_layout_once",
+                side_effect=[(result, True), (result, False)],
+            ) as sync_once,
+            patch.object(n1_service._device_monitor_stop, "wait") as wait,
+        ):
+            self.assertEqual(n1_service.sync_layout({"keys": []}), result)
+
+        self.assertEqual(sync_once.call_count, 2)
+        wait.assert_called_once_with(n1_service.FIRST_SYNC_REPLAY_DELAY)
+
+    def test_settled_layout_is_transferred_only_once(self):
+        result = {"written": 5, "animated": 0, "brightness": 86, "page": 1}
+        with (
+            patch.object(
+                n1_service,
+                "_sync_layout_once",
+                return_value=(result, False),
+            ) as sync_once,
+            patch.object(n1_service._device_monitor_stop, "wait") as wait,
+        ):
+            self.assertEqual(n1_service.sync_layout({"keys": []}), result)
+
+        sync_once.assert_called_once_with({"keys": []})
+        wait.assert_not_called()
 
 
 class BrightnessTests(unittest.TestCase):

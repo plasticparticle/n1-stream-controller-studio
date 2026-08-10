@@ -33,6 +33,7 @@ RECONNECT_TIMEOUT = 8.0
 INSTANCE_TERMINATE_TIMEOUT = 2.0
 INSTANCE_KILL_TIMEOUT = 1.0
 FIRST_SYNC_CONFIRM_DELAY = 0.12
+FIRST_SYNC_REPLAY_DELAY = 0.5
 
 _stdout_lock = threading.Lock()
 _device_lock = threading.RLock()
@@ -911,6 +912,24 @@ def close_device() -> None:
             )
 
 
+def device_transport_is_ready() -> bool:
+    """Return whether the current HID handle still accepts writes.
+
+    USB can disappear and re-enumerate between monitor polls. In that case the
+    sysfs device is present again, but the SDK object may still contain the
+    handle that belonged to the previous enumeration. Checking the transport
+    handle makes that short unplug/replug cycle observable.
+    """
+    with _device_lock:
+        device = _device
+        if device is None:
+            return False
+        try:
+            return device.transport.can_write()
+        except Exception:
+            return False
+
+
 def is_transport_failure(error: Exception) -> bool:
     if isinstance(error, (OSError, PermissionError)):
         return True
@@ -1013,6 +1032,12 @@ def monitor_device() -> None:
                         status = "error" if isinstance(error, PermissionError) else "reconnecting"
                         emit({"event": "status", "status": status, "error": message})
                         last_error = message
+            elif not device_transport_is_ready():
+                message = "N1 HID transport became unavailable; reopening USB device"
+                if message != last_error:
+                    emit({"event": "status", "status": "reconnecting", "error": message})
+                    last_error = message
+                close_device()
             last_present = present
         except Exception as error:
             message = str(error)
@@ -1022,7 +1047,7 @@ def monitor_device() -> None:
         _device_monitor_stop.wait(DEVICE_MONITOR_INTERVAL)
 
 
-def _sync_layout_once(payload: dict[str, Any]) -> dict[str, Any]:
+def _sync_layout_once(payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     device = connect()
     require_writable(device)
     keys = list(payload.get("keys") or [])[:15]
@@ -1031,6 +1056,7 @@ def _sync_layout_once(payload: dict[str, Any]) -> dict[str, Any]:
     profile_name = str(payload.get("profileName") or payload.get("profile") or "Profile")
 
     with _device_lock, tempfile.TemporaryDirectory(prefix="n1-controller-studio-") as temp_dir:
+        first_sync_after_connect = _needs_confirmed_refresh
         temp_path = Path(temp_dir)
         written = 0
         animated = 0
@@ -1059,16 +1085,31 @@ def _sync_layout_once(payload: dict[str, Any]) -> dict[str, Any]:
         device.set_brightness(brightness)
         commit_layout_refresh(device)
         device.start_gif_loop()
-    return {
-        "written": written,
-        "animated": animated,
-        "brightness": brightness,
-        "page": page_number,
-    }
+    return (
+        {
+            "written": written,
+            "animated": animated,
+            "brightness": brightness,
+            "page": page_number,
+        },
+        first_sync_after_connect,
+    )
 
 
 def sync_layout(payload: dict[str, Any]) -> dict[str, Any]:
-    return run_with_reconnect(lambda: _sync_layout_once(payload))
+    def sync_with_settled_replay() -> dict[str, Any]:
+        result, first_sync_after_connect = _sync_layout_once(payload)
+        if not first_sync_after_connect:
+            return result
+
+        # The legacy N1 can acknowledge image transfers while Dock mode is still
+        # settling, then display a black framebuffer. A refresh alone cannot recover
+        # frames discarded during that interval, so replay the complete layout once.
+        _device_monitor_stop.wait(FIRST_SYNC_REPLAY_DELAY)
+        result, _ = _sync_layout_once(payload)
+        return result
+
+    return run_with_reconnect(sync_with_settled_replay)
 
 
 def _set_key_state_once(payload: dict[str, Any]) -> dict[str, Any]:
