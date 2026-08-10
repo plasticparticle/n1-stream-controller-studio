@@ -2737,7 +2737,8 @@ fn validate_sync_payload(payload: &Value) -> Result<(), String> {
         }
         if id == "ai-agent" {
             validate_agent_action(key)?;
-            if let Some(session) = agent_session_label(key)
+            if key.get("agentWorkflow").and_then(Value::as_str) == Some("new")
+                && let Some(session) = agent_session_label(key)
                 && !agent_session_labels.insert(session.to_lowercase())
             {
                 return Err(format!("AI session label must be unique: {session}"));
@@ -3915,6 +3916,18 @@ mod tests {
         });
         let mut keys = vec![Value::Null; 15];
         keys[0] = valid_agent;
+        assert!(
+            validate_sync_payload(
+                &json!({"profile": "codex-cli", "profileName": "Codex CLI", "keys": keys})
+            )
+            .is_ok()
+        );
+        keys[1] = json!({
+            "id": "ai-agent",
+            "agent": "codex",
+            "agentWorkflow": "debug",
+            "agentSession": {"agent": "codex", "title": "CODEX 3"}
+        });
         assert!(
             validate_sync_payload(
                 &json!({"profile": "codex-cli", "profileName": "Codex CLI", "keys": keys})
