@@ -23,6 +23,7 @@ python3 -m venv "${VENV_DIR}"
   --no-build-isolation \
   --require-hashes \
   -r "${PROJECT_DIR}/driver/requirements.txt"
+bash "${PROJECT_DIR}/scripts/install-streamdock-transport.sh"
 
 echo
 echo "Installing the udev permission rule (sudo may ask for your password)…"

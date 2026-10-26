@@ -28,7 +28,8 @@ SOURCE_HASH="$(
   sha256sum \
     "${PROJECT_DIR}/driver/n1_service.py" \
     "${PROJECT_DIR}/driver/build-requirements.txt" \
-    "${PROJECT_DIR}/driver/requirements.txt" |
+    "${PROJECT_DIR}/driver/requirements.txt" \
+    "${PROJECT_DIR}/scripts/install-streamdock-transport.sh" |
     sha256sum |
     cut -d ' ' -f 1
 )"
@@ -39,6 +40,11 @@ fi
 
 if ! "${VENV_PYTHON}" -m PyInstaller --version >/dev/null 2>&1; then
   echo "The pinned PyInstaller build dependency is missing. Run npm run setup:driver." >&2
+  exit 1
+fi
+
+if ! "${VENV_PYTHON}" -c 'import StreamDock.Transport.LibUSBHIDAPI' >/dev/null 2>&1; then
+  echo "The StreamDock transport library is missing. Run npm run setup:driver." >&2
   exit 1
 fi
 
