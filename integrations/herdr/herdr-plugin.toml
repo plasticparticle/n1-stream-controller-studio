@@ -1,0 +1,9 @@
+id = "n1-studio"
+name = "N1 Stream Controller Studio"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Owns the herdr deck shown on an N1 stream controller"
+platforms = ["linux"]
+
+[[startup]]
+command = ["bash", "install-deck-config.sh"]

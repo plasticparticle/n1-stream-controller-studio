@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageColor, ImageDraw, ImageFont, ImageOps, ImageSequence
+from PIL import Image, ImageColor, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageSequence
 from StreamDock.Devices.StreamDock import StreamDock
 from StreamDock.Devices.StreamDockN1 import StreamDockN1
 from StreamDock.InputTypes import EventType
@@ -482,7 +482,259 @@ def render_sound_key(
     return image
 
 
+HERDR_STATUS_COLORS = {
+    "blocked": "#ef476f",
+    "done": "#38d996",
+    "working": "#ff9f1c",
+    "idle": "#4f8fb8",
+    "unknown": "#7d8790",
+    "none": "#56616a",
+    "empty": "#2b3236",
+    "offline": "#2b3236",
+    "shell": "#5d6a72",
+}
+HERDR_MAX_PANE_DOTS = 7
+HERDR_ANIMATION_FRAMES = 8
+HERDR_ANIMATION_DELAY = 110
+
+
+def herdr_state(key: dict[str, Any]) -> dict[str, Any]:
+    state = key.get("herdr")
+    return state if isinstance(state, dict) else {}
+
+
+def herdr_key_is_animated(key: dict[str, Any]) -> bool:
+    state = herdr_state(key)
+    if state.get("animate") is False:
+        return False
+    active = {"blocked", "working"}
+    return state.get("status") in active or bool(active & set(herdr_pane_statuses(state)))
+
+
+def draw_herdr_glyph(
+    draw: ImageDraw.ImageDraw,
+    glyph: str,
+    color: tuple[int, int, int],
+    progress: float,
+) -> None:
+    cx, cy = 48, 36
+    if glyph == "blocked":
+        radius = 15 + round(3 * math.sin(progress * math.tau))
+        draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), outline=color, width=3)
+        draw.rounded_rectangle((cx - 2, cy - 9, cx + 2, cy + 3), radius=2, fill=color)
+        draw.ellipse((cx - 2, cy + 6, cx + 2, cy + 10), fill=color)
+    elif glyph in {"done", "approve"}:
+        draw.line((cx - 11, cy, cx - 3, cy + 8, cx + 12, cy - 9), fill=color, width=4, joint="curve")
+    elif glyph == "working":
+        start = int(progress * 360)
+        draw.arc((cx - 14, cy - 14, cx + 14, cy + 14), start, start + 270, fill=color, width=4)
+    elif glyph == "idle":
+        draw.ellipse((cx - 7, cy - 7, cx + 7, cy + 7), outline=color, width=3)
+    elif glyph == "unknown":
+        font = find_font(26, bold=True)
+        box = draw.textbbox((0, 0), "?", font=font)
+        draw.text((cx - (box[2] - box[0]) / 2, cy - 16), "?", font=font, fill=color)
+    elif glyph == "attention":
+        for offset in (-9, 3):
+            draw.line(
+                (cx + offset - 6, cy - 10, cx + offset + 4, cy, cx + offset - 6, cy + 10),
+                fill=color,
+                width=4,
+                joint="curve",
+            )
+    elif glyph == "back":
+        draw.line((cx + 12, cy, cx - 10, cy), fill=color, width=4)
+        draw.line((cx - 1, cy - 10, cx - 11, cy, cx - 1, cy + 10), fill=color, width=4, joint="curve")
+    elif glyph == "new-agent":
+        draw.line((cx - 12, cy, cx + 12, cy), fill=color, width=4)
+        draw.line((cx, cy - 12, cx, cy + 12), fill=color, width=4)
+    elif glyph == "interrupt":
+        draw.rounded_rectangle((cx - 10, cy - 10, cx + 10, cy + 10), radius=3, fill=color)
+    elif glyph == "dictate":
+        draw.rounded_rectangle((cx - 6, cy - 15, cx + 6, cy + 4), radius=6, fill=color)
+        draw.arc((cx - 11, cy - 9, cx + 11, cy + 10), 0, 180, fill=color, width=3)
+        draw.line((cx, cy + 10, cx, cy + 15), fill=color, width=3)
+        draw.line((cx - 6, cy + 15, cx + 6, cy + 15), fill=color, width=3)
+    elif glyph == "shell":
+        draw.line((cx - 13, cy - 8, cx - 4, cy, cx - 13, cy + 8), fill=color, width=4, joint="curve")
+        draw.line((cx, cy + 9, cx + 13, cy + 9), fill=color, width=4)
+    elif glyph in {"prompt-up", "prompt-down"}:
+        direction = -1 if glyph == "prompt-up" else 1
+        draw.line(
+            (cx - 12, cy - 6 * direction, cx, cy + 6 * direction, cx + 12, cy - 6 * direction),
+            fill=color,
+            width=4,
+            joint="curve",
+        )
+    elif glyph == "prompt-select":
+        draw.line((cx + 11, cy - 10, cx + 11, cy + 4, cx - 9, cy + 4), fill=color, width=4)
+        draw.line((cx - 3, cy - 3, cx - 10, cy + 4, cx - 3, cy + 11), fill=color, width=4, joint="curve")
+    elif glyph == "prompt-cancel":
+        draw.line((cx - 9, cy - 9, cx + 9, cy + 9), fill=color, width=4)
+        draw.line((cx - 9, cy + 9, cx + 9, cy - 9), fill=color, width=4)
+    elif glyph in {"next-workspace", "previous-workspace"}:
+        direction = 1 if glyph == "next-workspace" else -1
+        draw.line(
+            (cx - 6 * direction, cy - 11, cx + 6 * direction, cy, cx - 6 * direction, cy + 11),
+            fill=color,
+            width=4,
+            joint="curve",
+        )
+
+
+def herdr_pane_statuses(state: dict[str, Any]) -> list[str]:
+    panes = state.get("panes")
+    if not isinstance(panes, list):
+        return []
+    return [str(status) for status in panes]
+
+
+def scale_color(color: tuple[int, int, int], factor: float) -> tuple[int, int, int]:
+    return tuple(max(0, min(255, int(channel * factor))) for channel in color)
+
+
+def lift_color(color: tuple[int, int, int], amount: int) -> tuple[int, int, int]:
+    return tuple(min(255, channel + amount) for channel in color)
+
+
+def draw_herdr_pane_dots(
+    draw: ImageDraw.ImageDraw,
+    statuses: list[str],
+    progress: float,
+    total: int,
+) -> None:
+    """One dot per pane along the top: filled in the agent's color, a ring for a plain shell."""
+    if not statuses:
+        return
+    size, gap = 9, 3
+    shown = statuses[: HERDR_MAX_PANE_DOTS - 1] if total > HERDR_MAX_PANE_DOTS else statuses
+    extra = total - len(shown)
+    small = find_font(9, bold=True)
+    extra_text = f"+{extra}" if extra > 0 else ""
+    extra_width = draw.textbbox((0, 0), extra_text, font=small)[2] + gap if extra_text else 0
+    width = len(shown) * size + (len(shown) - 1) * gap + extra_width
+    left = 48 - width / 2
+    for index, status in enumerate(shown):
+        x = left + index * (size + gap)
+        box = (x, 7, x + size, 7 + size)
+        if status == "shell":
+            draw.ellipse(box, outline=(206, 214, 210), width=2)
+            continue
+        color = rgb(HERDR_STATUS_COLORS.get(status, HERDR_STATUS_COLORS["unknown"]))
+        if status == "blocked":
+            color = lift_color(color, int(60 * (0.5 + 0.5 * math.sin(progress * math.tau))))
+        elif status == "working":
+            phase = (progress - index / max(1, len(shown))) % 1.0
+            color = lift_color(color, int(80 * max(0.0, math.cos(phase * math.tau))))
+        draw.ellipse(box, fill=color, outline=(8, 10, 12), width=1)
+    if extra_text:
+        draw.text((left + width - extra_width + gap, 6), extra_text, font=small, fill=(236, 240, 233))
+
+
+def render_herdr_key(key: dict[str, Any], progress: float = 0.0) -> Image.Image:
+    state = herdr_state(key)
+    status = str(state.get("status") or "offline")
+    action = str(key.get("herdrAction") or "workspace")
+    accent = rgb(str(state.get("color") or HERDR_STATUS_COLORS.get(status, "#7d8790")))
+    inactive = status in {"empty", "offline"} or state.get("enabled") is False
+    if inactive:
+        accent = scale_color(accent, 0.55)
+    focused = state.get("focused") is True
+    pulse = 0.5 + 0.5 * math.sin(progress * math.tau) if status == "blocked" else 0.0
+
+    # Vertical gradient; the focused key is filled with its status color.
+    if focused:
+        top, bottom = 0.78 + 0.12 * pulse, 0.34
+    else:
+        top, bottom = 0.30 + 0.16 * pulse, 0.05
+    image = Image.new("RGB", KEY_SIZE, (0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    for row in range(KEY_SIZE[1]):
+        mix = row / (KEY_SIZE[1] - 1)
+        draw.line((0, row, KEY_SIZE[0], row), fill=scale_color(accent, top + (bottom - top) * mix))
+
+    # Soft glow behind the glyph and a faint shine across the top.
+    if not inactive:
+        glow = Image.new("L", KEY_SIZE, 0)
+        ImageDraw.Draw(glow).ellipse((22, 10, 74, 62), fill=150 if focused else 120)
+        glow = glow.filter(ImageFilter.GaussianBlur(9))
+        image = Image.composite(
+            Image.new("RGB", KEY_SIZE, lift_color(accent, 40) if focused else accent),
+            image,
+            glow,
+        )
+    shine = Image.new("L", KEY_SIZE, 0)
+    ImageDraw.Draw(shine).rounded_rectangle((8, 5, 87, 30), radius=12, fill=34 if focused else 22)
+    shine = shine.filter(ImageFilter.GaussianBlur(5))
+    image = Image.composite(Image.new("RGB", KEY_SIZE, (255, 255, 255)), image, shine)
+    body = Image.new("L", KEY_SIZE, 0)
+    ImageDraw.Draw(body).rounded_rectangle((1, 1, 94, 94), radius=12, fill=255)
+    image = Image.composite(image, Image.new("RGB", KEY_SIZE, (0, 0, 0)), body)
+    draw = ImageDraw.Draw(image)
+    if focused:
+        draw.rounded_rectangle((1, 1, 94, 94), radius=12, outline=(246, 248, 243), width=3)
+    else:
+        draw.rounded_rectangle((1, 1, 94, 94), radius=12, outline=scale_color(accent, 0.62), width=2)
+
+    small = find_font(10, bold=True)
+    number = str(state.get("number") or "")[:3]
+    if number:
+        box = draw.textbbox((0, 0), number, font=small)
+        draw.rounded_rectangle((7, 7, 7 + box[2] - box[0] + 10, 21), radius=7, fill=(8, 10, 12))
+        draw.text((12, 8), number, font=small, fill=(236, 240, 233))
+    badge = str(state.get("badge") or "")[:3]
+    if badge:
+        box = draw.textbbox((0, 0), badge, font=small)
+        width = box[2] - box[0]
+        draw.rounded_rectangle((80 - width - 8, 7, 89, 21), radius=7, fill=lift_color(accent, 40))
+        draw.text((80 - width - 3, 8), badge, font=small, fill=(10, 12, 14))
+
+    glyph = str(state.get("glyph") or (status if action == "workspace" else action))
+    if focused:
+        glyph_color = (250, 251, 247)
+    elif inactive:
+        glyph_color = accent
+    else:
+        glyph_color = lift_color(accent, 80)
+    draw_herdr_glyph(draw, glyph, glyph_color, progress)
+
+    label = state.get("label")
+    title, font = fit_text(draw, str(key.get("title") or "" if label is None else label), 84)
+    box = draw.textbbox((0, 0), title, font=font)
+    x = (96 - (box[2] - box[0])) / 2
+    draw.text((x + 1, 57), title, font=font, fill=(0, 0, 0))
+    draw.text((x, 56), title, font=font, fill=(246, 248, 243))
+    detail = str(state.get("detail") or "")
+    if detail:
+        detail_text, _ = fit_text(draw, detail, 84)
+        detail_font = find_font(8, bold=True)
+        box = draw.textbbox((0, 0), detail_text, font=detail_font)
+        draw.text(
+            ((96 - (box[2] - box[0])) / 2, 71),
+            detail_text,
+            font=detail_font,
+            fill=(236, 240, 233) if focused else (176, 186, 182),
+        )
+    panes = state.get("panes") if isinstance(state.get("panes"), list) else []
+    draw_herdr_pane_dots(draw, herdr_pane_statuses(state), progress, len(panes))
+    return image
+
+
+def load_herdr_frames(key: dict[str, Any]) -> tuple[list[bytes], list[int]]:
+    frame_count = HERDR_ANIMATION_FRAMES if herdr_key_is_animated(key) else 1
+    frames: list[bytes] = []
+    for frame_number in range(frame_count):
+        stream = io.BytesIO()
+        render_herdr_key(key, frame_number / frame_count).save(
+            stream, "JPEG", quality=90, subsampling=0
+        )
+        frames.append(stream.getvalue())
+    return frames, [HERDR_ANIMATION_DELAY] * frame_count
+
+
 def render_key(key: dict[str, Any]) -> Image.Image:
+    if key.get("id") == "herdr":
+        return render_herdr_key(key)
     if key.get("id") == "sound" and isinstance(key.get("sound"), dict):
         return render_sound_key(key)
     base = rgb(key.get("color", "#37b7ff"))
@@ -606,6 +858,20 @@ def apply_key_visual(
     )
     visual = None if is_configured_sound else visual_for_key(key, secondary)
     device.clear_key_gif(index)
+
+    if key.get("id") == "herdr":
+        frames, delays = load_herdr_frames(key)
+        first_frame_path = temp_path / f"key-{index:02d}-herdr.jpg"
+        first_frame_path.write_bytes(frames[0])
+        result = device.set_key_image(index, str(first_frame_path))
+        if result != 0:
+            raise RuntimeError(f"Image transfer failed for key {index}: {result}")
+        if len(frames) > 1:
+            result = device.set_key_gif_stream(frames, delays, index)
+            if result != 0:
+                raise RuntimeError(f"Animation setup failed for key {index}: {result}")
+            return True
+        return False
 
     if visual:
         frames, delays = load_visual_frames(visual, key)
@@ -777,6 +1043,51 @@ def render_dial_status() -> Image.Image:
     draw.line((17, 68, 63, 68), fill=(52, 61, 66), width=1)
     draw.ellipse((37, 66, 42, 71), fill=accent)
     return image
+
+
+def render_text_status(spec: dict[str, Any]) -> Image.Image:
+    image = Image.new("RGB", (80, 80), (4, 7, 10))
+    draw = ImageDraw.Draw(image)
+    accent = rgb(str(spec.get("accent") or "#37b7ff"))
+    border = tuple(max(20, int(channel * 0.4)) for channel in accent)
+    draw.rounded_rectangle((5, 5, 74, 74), radius=12, fill=(9, 14, 19), outline=border, width=2)
+    draw.rounded_rectangle((10, 11, 13, 26), radius=2, fill=accent)
+    label = " ".join(str(spec.get("label") or "").upper().split())[:10]
+    draw.text((18, 10), label, font=find_font(8, bold=True), fill=accent)
+
+    lines = [
+        " ".join(str(line).upper().split())[:12]
+        for line in (spec.get("lines") if isinstance(spec.get("lines"), list) else [])
+    ][:3]
+    lines = [line for line in lines if line] or ["—"]
+    font_size = {1: 17, 2: 13, 3: 11}[len(lines)]
+    while font_size > 8:
+        font = find_font(font_size, bold=True)
+        if all(draw.textbbox((0, 0), line, font=font)[2] <= 62 for line in lines):
+            break
+        font_size -= 1
+    font = find_font(font_size, bold=True)
+    line_height = font_size + 3
+    top = 42 - (line_height * len(lines)) / 2
+    for index, line in enumerate(lines):
+        box = draw.textbbox((0, 0), line, font=font)
+        draw.text(
+            ((80 - (box[2] - box[0])) / 2, top + index * line_height),
+            line,
+            font=font,
+            fill=(244, 248, 241),
+        )
+    draw.line((17, 68, 63, 68), fill=(52, 61, 66), width=1)
+    draw.ellipse((37, 66, 42, 71), fill=accent)
+    return image
+
+
+def strip_override(payload: dict[str, Any], index: int) -> dict[str, Any] | None:
+    strip = payload.get("strip")
+    if not isinstance(strip, list) or index >= len(strip):
+        return None
+    spec = strip[index]
+    return spec if isinstance(spec, dict) else None
 
 
 def render_status_icon(
@@ -1073,9 +1384,13 @@ def _sync_layout_once(payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
 
         for status_index in range(3):
             icon_path = temp_path / f"status-{status_index}.jpg"
-            render_status_icon(status_index, page_number, profile_name).save(
-                icon_path, "JPEG", quality=95, subsampling=0
+            override = strip_override(payload, status_index)
+            icon = (
+                render_text_status(override)
+                if override
+                else render_status_icon(status_index, page_number, profile_name)
             )
+            icon.save(icon_path, "JPEG", quality=95, subsampling=0)
             result = device.set_key_image(16 + status_index, str(icon_path))
             if result != 0:
                 raise RuntimeError(
@@ -1132,6 +1447,50 @@ def _set_key_state_once(payload: dict[str, Any]) -> dict[str, Any]:
 
 def set_key_state(payload: dict[str, Any]) -> dict[str, Any]:
     return run_with_reconnect(lambda: _set_key_state_once(payload))
+
+
+def _set_deck_state_once(payload: dict[str, Any]) -> dict[str, Any]:
+    keys = payload.get("keys") if isinstance(payload.get("keys"), list) else []
+    strip = payload.get("strip") if isinstance(payload.get("strip"), list) else []
+    if len(keys) > 15 or len(strip) > 3:
+        raise ValueError("Deck state accepts at most 15 keys and 3 status displays")
+    updates: list[tuple[int, dict[str, Any]]] = []
+    for entry in keys:
+        index = int(entry.get("key") or 0) if isinstance(entry, dict) else 0
+        config = entry.get("config") if isinstance(entry, dict) else None
+        if index not in range(1, 16) or not isinstance(config, dict):
+            raise ValueError("Deck state keys need an index between 1 and 15 and a configuration")
+        updates.append((index, config))
+    strip_updates: list[tuple[int, dict[str, Any]]] = []
+    for entry in strip:
+        index = int(entry.get("index", -1)) if isinstance(entry, dict) else -1
+        spec = entry.get("spec") if isinstance(entry, dict) else None
+        if index not in range(3) or not isinstance(spec, dict):
+            raise ValueError("Deck state status displays need an index between 0 and 2")
+        strip_updates.append((index, spec))
+
+    animated = 0
+    with _device_lock, tempfile.TemporaryDirectory(prefix="n1-deck-state-") as temp_dir:
+        device = connect()
+        require_writable(device)
+        temp_path = Path(temp_dir)
+        for index, config in updates:
+            if apply_key_visual(device, index, config, temp_path):
+                animated += 1
+        for index, spec in strip_updates:
+            icon_path = temp_path / f"status-{index}.jpg"
+            render_text_status(spec).save(icon_path, "JPEG", quality=95, subsampling=0)
+            result = device.set_key_image(16 + index, str(icon_path))
+            if result != 0:
+                raise RuntimeError(f"Status-strip transfer failed for key {16 + index}: {result}")
+        if updates or strip_updates:
+            device.refresh()
+            device.start_gif_loop()
+    return {"written": len(updates), "strip": len(strip_updates), "animated": animated}
+
+
+def set_deck_state(payload: dict[str, Any]) -> dict[str, Any]:
+    return run_with_reconnect(lambda: _set_deck_state_once(payload))
 
 
 def _set_sound_state_once(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1213,6 +1572,8 @@ def handle_command(message: dict[str, Any]) -> None:
             response(request_id, True, **identify(message.get("payload") or {}))
         elif command == "key_state":
             response(request_id, True, **set_key_state(message.get("payload") or {}))
+        elif command == "deck_state":
+            response(request_id, True, **set_deck_state(message.get("payload") or {}))
         elif command == "sound_state":
             response(request_id, True, **set_sound_state(message.get("payload") or {}))
         elif command == "shutdown":

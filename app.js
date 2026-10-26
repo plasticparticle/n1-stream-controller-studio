@@ -29,6 +29,12 @@ const backend = {
   syncKeyVisual(key, action) {
     return this.invoke("sync_key_visual", { key, action });
   },
+  herdrStatus() {
+    return this.invoke("herdr_status");
+  },
+  herdrNextPage() {
+    return this.invoke("herdr_next_page");
+  },
   storeAsset(payload) {
     return this.invoke("store_asset", { payload });
   },
@@ -72,7 +78,8 @@ const backend = {
           : null,
         agentSlot: Number(action?.agentSlot) || null,
         projectDirectory: action?.projectDirectory || null,
-        agentSession: action?.agentSession || null
+        agentSession: action?.agentSession || null,
+        herdrAction: action?.id === "herdr" ? action.herdrAction || null : null
       }
     });
   },
@@ -102,6 +109,13 @@ const icons = {
   record: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"></circle><circle cx="12" cy="12" r="3"></circle></svg>',
   message: '<svg viewBox="0 0 24 24"><path d="M20 15a3 3 0 0 1-3 3H8l-5 3V7a3 3 0 0 1 3-3h11a3 3 0 0 1 3 3v8Z"></path><path d="M8 9h8M8 13h5"></path></svg>',
   app: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"></rect><path d="M9 9h6v6H9z"></path></svg>',
+  herdrSpace: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M9 4v16M3 10h6M3 15h6"></path></svg>',
+  herdrNext: '<svg viewBox="0 0 24 24"><path d="m6 6 6 6-6 6M13 6l6 6-6 6"></path></svg>',
+  herdrApprove: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="4"></rect><path d="m8 12 3 3 5-6"></path></svg>',
+  herdrBack: '<svg viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"></path></svg>',
+  herdrForward: '<svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>',
+  herdrStop: '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>',
+  herdrMic: '<svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8"></path></svg>',
   codexAgent: '<svg viewBox="0 0 24 24"><path d="m12 3 3 1.7 3.4-.1.1 3.4 1.7 3-1.7 3-.1 3.4-3.4-.1-3 1.7-3-1.7-3.4.1-.1-3.4-1.7-3 1.7-3 .1-3.4 3.4.1L12 3Z"></path><circle cx="12" cy="12" r="3.2"></circle></svg>',
   claudeAgent: '<svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6 5.6 18.4"></path><circle cx="12" cy="12" r="2.5"></circle></svg>',
   geminiAgent: '<svg viewBox="0 0 24 24"><path d="M12 2c.8 6.3 3.7 9.2 10 10-6.3.8-9.2 3.7-10 10-.8-6.3-3.7-9.2-10-10 6.3-.8 9.2-3.7 10-10Z"></path></svg>',
@@ -403,6 +417,58 @@ actionCatalog.push({
   group: "AI Actions"
 });
 
+const herdrProfileId = "herdr";
+const herdrActionDefinitions = {
+  workspace: { title: "SPACE", name: "herdr Workspace", icon: "herdrSpace", color: "#4f8fb8", description: "Shows the next herdr workspace in sidebar order and jumps to its most urgent agent" },
+  attention: { title: "NEXT", name: "Next Attention", icon: "herdrNext", color: "#ef476f", description: "Jump to the agent that has waited longest: approvals first, then finished work" },
+  approve: { title: "APPROVE", name: "Approve", icon: "herdrApprove", color: "#38d996", description: "Answer the waiting approval prompt of the focused or longest-waiting agent" },
+  back: { title: "BACK", name: "Previous Workspace", icon: "herdrBack", color: "#37b7ff", description: "Return to the workspace you came from" },
+  "new-agent": { title: "NEW", name: "New Agent", icon: "plus", color: "#a78bfa", description: "Start a new agent beside the focused herdr pane" },
+  interrupt: { title: "INTERRUPT", name: "Interrupt Agent", icon: "herdrStop", color: "#ff9f1c", description: "Send Esc to the focused working agent" },
+  dictate: { title: "DICTATE", name: "Dictate to Claude", icon: "herdrMic", color: "#ef476f", description: "Tap to start Claude Code voice dictation, tap again to send" },
+  "next-workspace": { title: "NEXT SPACE", name: "Next Workspace", icon: "herdrForward", color: "#37b7ff", description: "Focus the next herdr workspace" },
+  "previous-workspace": { title: "PREV SPACE", name: "Previous Workspace in List", icon: "herdrBack", color: "#37b7ff", description: "Focus the previous herdr workspace" }
+};
+const defaultHerdrDeck = {
+  autoSwitch: true,
+  keys: [
+    ...Array.from({ length: 10 }, () => ({ action: "workspace", optional: false })),
+    { action: "attention", optional: false },
+    { action: "approve", optional: false },
+    { action: "back", optional: false },
+    { action: "new-agent", optional: false },
+    { action: "dictate", optional: true }
+  ]
+};
+
+Object.entries(herdrActionDefinitions).forEach(([herdrAction, definition]) => {
+  actionCatalog.push({
+    id: "herdr",
+    catalogId: `herdr-${herdrAction}`,
+    herdrAction,
+    name: definition.name,
+    subtitle: `herdr · ${herdrAction}`,
+    description: definition.description,
+    icon: definition.icon,
+    color: definition.color,
+    category: "ai",
+    group: "herdr"
+  });
+});
+
+function herdrKeyTuple(herdrAction, managed) {
+  const definition = herdrActionDefinitions[herdrAction];
+  return ["herdr", definition.title, definition.color, { herdrAction, herdrManaged: managed }];
+}
+
+function herdrDeckTuples(deck) {
+  return deck.keys.map((slot) =>
+    slot?.action && herdrActionDefinitions[slot.action]
+      ? herdrKeyTuple(slot.action, !slot.optional)
+      : null
+  );
+}
+
 function agentProfileLayout(agent) {
   const definition = agentDefinition(agent);
   const label = definition.label.toUpperCase();
@@ -459,7 +525,8 @@ const layouts = {
   ],
   "codex-cli": agentProfileLayout("codex"),
   "claude-cli": agentProfileLayout("claude"),
-  "gemini-cli": agentProfileLayout("gemini")
+  "gemini-cli": agentProfileLayout("gemini"),
+  [herdrProfileId]: herdrDeckTuples(defaultHerdrDeck)
 };
 
 const profileNames = {
@@ -468,10 +535,12 @@ const profileNames = {
   desktop: "Daily Desk",
   "codex-cli": "Codex CLI",
   "claude-cli": "Claude CLI",
-  "gemini-cli": "Gemini CLI"
+  "gemini-cli": "Gemini CLI",
+  [herdrProfileId]: "herdr"
 };
+const singlePageProfileIds = [...agentProfileIds, herdrProfileId];
 
-const defaultProfilesVersion = 1;
+const defaultProfilesVersion = 3;
 const maxProfiles = 24;
 const maxProfileNameLength = 40;
 const maxAutoSyncRetries = 6;
@@ -504,6 +573,9 @@ let agentVisualSyncTimer = null;
 let agentVisualSyncQueued = false;
 let agentVisualSyncForce = false;
 let agentVisualSyncInProgress = false;
+let herdrState = { connected: false, slots: [], actions: {}, deck: null };
+let lastHerdrDeckJson = "";
+let profileBeforeHerdr = null;
 const runtimeVisualStates = new Map();
 const soundPlaybackStates = new Map();
 const soundPlaybackByKey = new Map();
@@ -555,7 +627,9 @@ function createKeyData(tuple) {
       item.id === "ai-agent"
       && item.agentWorkflow === overrides.agentWorkflow
     )
-    : actionCatalog.find((item) => item.id === tuple[0]);
+    : tuple[0] === "herdr"
+      ? actionCatalog.find((item) => item.id === "herdr" && item.herdrAction === overrides.herdrAction)
+      : actionCatalog.find((item) => item.id === tuple[0]);
   const { catalogId: _catalogId, ...action } = matchedAction || actionCatalog[0];
   const sceneTargets = {
     STARTING: "Starting Soon",
@@ -648,6 +722,12 @@ try {
     if (savedPageState.profile && pageLayouts[savedPageState.profile]) {
       currentProfile = savedPageState.profile;
     }
+    if (
+      isValidProfileId(savedPageState.profileBeforeHerdr)
+      && pageLayouts[savedPageState.profileBeforeHerdr]
+    ) {
+      profileBeforeHerdr = savedPageState.profileBeforeHerdr;
+    }
     if (Array.isArray(savedPageState.disabledProfiles)) {
       savedPageState.disabledProfiles.forEach((profile) => {
         if (pageLayouts[profile]) disabledProfiles.add(profile);
@@ -696,17 +776,29 @@ try {
 }
 
 if (profileOrder.length && restoredDefaultProfilesVersion < defaultProfilesVersion) {
-  agentProfileIds.forEach((profile) => {
+  const addedProfiles = restoredDefaultProfilesVersion < 1
+    ? singlePageProfileIds
+    : [herdrProfileId];
+  addedProfiles.forEach((profile) => {
     if (pageLayouts[profile] || profileOrder.length >= maxProfiles) return;
     pageLayouts[profile] = [structuredClone(layouts[profile])];
     currentPageByProfile[profile] = 0;
     profileOrder.push(profile);
   });
+  // Version 3 made Dictate the default optional herdr key; replace the unchanged old default.
+  const herdrOptional = pageLayouts[herdrProfileId]?.[0]?.[14];
+  if (
+    restoredDefaultProfilesVersion === 2
+    && herdrOptional?.id === "herdr"
+    && herdrOptional.herdrAction === "interrupt"
+  ) {
+    pageLayouts[herdrProfileId][0][14] = createKeyData(herdrKeyTuple("dictate", false));
+  }
 }
 
 if (!profileOrder.length) {
   Object.keys(layouts).forEach((profile) => {
-    pageLayouts[profile] = agentProfileIds.includes(profile)
+    pageLayouts[profile] = singlePageProfileIds.includes(profile)
       ? [layouts[profile]]
       : [layouts[profile], Array(15).fill(null)];
     currentPageByProfile[profile] = 0;
@@ -744,7 +836,8 @@ function persistPages() {
       disabledProfiles: [...disabledProfiles],
       profiles: pageLayouts,
       activeAgentSessions: activeAgentSessionByProfile,
-      agentPromptOverrides: agentPromptOverridesByProfile
+      agentPromptOverrides: agentPromptOverridesByProfile,
+      profileBeforeHerdr
     }));
   } catch {
     // Local drafts are a convenience; storage failures must not block editing.
@@ -826,7 +919,7 @@ function renderProfileManager() {
   const deleteButton = document.querySelector("#deleteProfileButton");
   addButton.disabled = atProfileLimit;
   duplicateButton.disabled = atProfileLimit;
-  deleteButton.disabled = profileOrder.length <= 1;
+  deleteButton.disabled = profileOrder.length <= 1 || currentProfile === herdrProfileId;
   addButton.title = atProfileLimit ? `Up to ${maxProfiles} profiles are supported` : "Add profile";
   duplicateButton.title = atProfileLimit
     ? `Up to ${maxProfiles} profiles are supported`
@@ -834,9 +927,11 @@ function renderProfileManager() {
   resetButton.title = Object.hasOwn(factoryLayouts, currentProfile)
     ? "Reset profile to factory defaults"
     : "Clear profile to one empty page";
-  deleteButton.title = profileOrder.length <= 1
-    ? "The only profile cannot be deleted"
-    : "Delete current profile";
+  deleteButton.title = currentProfile === herdrProfileId
+    ? "The herdr profile is managed by herdr; remove it from the rotation instead"
+    : profileOrder.length <= 1
+      ? "The only profile cannot be deleted"
+      : "Delete current profile";
   strip.querySelector(".profile-tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
@@ -973,7 +1068,7 @@ function factoryPagesForProfile(profileId) {
     return [Array(15).fill(null)];
   }
   const firstPage = structuredClone(factoryLayouts[profileId]);
-  return agentProfileIds.includes(profileId)
+  return singlePageProfileIds.includes(profileId)
     ? [firstPage]
     : [firstPage, Array(15).fill(null)];
 }
@@ -992,6 +1087,9 @@ function resetCurrentProfile() {
   pageLayouts[profileId] = factoryPagesForProfile(profileId);
   currentPageByProfile[profileId] = 0;
   clearProfileRuntimeState(profileId);
+  if (profileId === herdrProfileId) {
+    reconcileHerdrProfile(herdrState.deck || defaultHerdrDeck, true);
+  }
   selectedIndex = 0;
   catalogPreviewAction = null;
   duplicateSource = null;
@@ -1011,6 +1109,10 @@ function resetCurrentProfile() {
 }
 
 function deleteCurrentProfile() {
+  if (currentProfile === herdrProfileId) {
+    showToast("Managed by herdr", "Turn the herdr profile off in the rotation strip to stop automatic switching.");
+    return;
+  }
   if (profileOrder.length <= 1) {
     showToast("Profile required", "Studio needs at least one profile.");
     return;
@@ -1038,6 +1140,192 @@ function deleteCurrentProfile() {
   const nextProfile = profileOrder[Math.min(deletedIndex, profileOrder.length - 1)];
   activateProfile(nextProfile);
   showToast("Profile deleted", `${deletedName} was removed from Studio.`);
+}
+
+function isHerdrManagedKey(index, profile = currentProfile) {
+  return profile === herdrProfileId && pageLayouts[profile]?.[0]?.[index]?.herdrManaged === true;
+}
+
+function ensureHerdrProfile() {
+  if (pageLayouts[herdrProfileId]) return true;
+  if (profileOrder.length >= maxProfiles) return false;
+  pageLayouts[herdrProfileId] = [herdrDeckTuples(defaultHerdrDeck).map(createKeyData)];
+  currentPageByProfile[herdrProfileId] = 0;
+  profileNames[herdrProfileId] ||= "herdr";
+  profileOrder.push(herdrProfileId);
+  renderProfileManager();
+  return true;
+}
+
+// Managed keys always follow the deck owned by herdr; optional slots keep whatever
+// the user assigned and only fall back to the deck default while still managed.
+function reconcileHerdrProfile(deck, force = false) {
+  const deckJson = JSON.stringify(deck?.keys || []);
+  if (!Array.isArray(deck?.keys) || deck.keys.length !== 15) return;
+  if (!force && deckJson === lastHerdrDeckJson && pageLayouts[herdrProfileId]) return;
+  lastHerdrDeckJson = deckJson;
+  if (!ensureHerdrProfile()) return;
+  const pages = pageLayouts[herdrProfileId];
+  let changed = false;
+  if (pages.length > 1) {
+    pages.length = 1;
+    currentPageByProfile[herdrProfileId] = 0;
+    changed = true;
+  }
+  const layout = pages[0];
+  deck.keys.forEach((slot, index) => {
+    const current = layout[index];
+    const action = herdrActionDefinitions[slot?.action] ? slot.action : null;
+    if (!slot?.optional && action) {
+      if (!(current?.herdrManaged && current.herdrAction === action)) {
+        layout[index] = createKeyData(herdrKeyTuple(action, true));
+        changed = true;
+      }
+    } else if (current?.herdrManaged) {
+      layout[index] = action ? createKeyData(herdrKeyTuple(action, false)) : null;
+      changed = true;
+    }
+  });
+  if (!changed) return;
+  persistPages();
+  if (currentProfile === herdrProfileId) {
+    renderPageTabs();
+    renderKeys();
+    void requestDeviceSync();
+  }
+}
+
+function switchToHerdrProfile() {
+  if (
+    herdrState.deck?.autoSwitch === false
+    || disabledProfiles.has(herdrProfileId)
+    || !pageLayouts[herdrProfileId]
+    || currentProfile === herdrProfileId
+  ) {
+    return;
+  }
+  profileBeforeHerdr = currentProfile;
+  activateProfile(herdrProfileId);
+  showToast("herdr is running", "The N1 now shows your herdr workspaces and agents.");
+}
+
+function switchAwayFromHerdrProfile() {
+  const previous = profileBeforeHerdr;
+  profileBeforeHerdr = null;
+  if (currentProfile !== herdrProfileId || !previous || !pageLayouts[previous]) {
+    persistPages();
+    return;
+  }
+  activateProfile(previous);
+  showToast("herdr stopped", `The N1 is back on ${profileNames[previous]}.`);
+}
+
+function handleHerdrState(state) {
+  if (!state || typeof state !== "object") return;
+  const wasConnected = herdrState.connected === true;
+  if (state.deckError && state.deckError !== herdrState.deckError) {
+    showToast("herdr deck configuration ignored", state.deckError);
+  }
+  herdrState = state;
+  if (state.deck) reconcileHerdrProfile(state.deck);
+  if (state.connected && !wasConnected) switchToHerdrProfile();
+  else if (!state.connected && wasConnected) switchAwayFromHerdrProfile();
+  if (currentProfile === herdrProfileId || activeLayout().some((key) => key?.id === "herdr")) {
+    renderKeys();
+  }
+}
+
+function herdrViewForKey(key, index) {
+  if (!herdrState.connected) {
+    return { status: "offline", label: key.title, enabled: false };
+  }
+  // A waiting dialog of the focused agent temporarily takes over the action keys.
+  const promptView = currentProfile === herdrProfileId && Number.isInteger(index)
+    ? herdrState.prompt?.keys?.[index]
+    : null;
+  if (promptView) return promptView;
+  if (key.herdrAction !== "workspace") {
+    return herdrState.actions?.[key.herdrAction] || { status: "idle", label: key.title };
+  }
+  if (!Number.isInteger(index)) return { status: "idle", label: key.title };
+  const slot = activeLayout()
+    .slice(0, index)
+    .filter((item) => item?.id === "herdr" && item.herdrAction === "workspace")
+    .length;
+  return herdrState.slots?.[slot] || { status: "empty", label: "" };
+}
+
+const herdrGlyphs = {
+  blocked: "!",
+  done: "✓",
+  working: "◌",
+  idle: "○",
+  unknown: "?",
+  attention: "»",
+  approve: "✓",
+  back: "←",
+  "new-agent": "+",
+  interrupt: "■",
+  dictate: "🎙",
+  "next-workspace": "›",
+  "previous-workspace": "‹",
+  "prompt-up": "▲",
+  "prompt-down": "▼",
+  "prompt-select": "⏎",
+  "prompt-cancel": "✕",
+  shell: "›_"
+};
+const herdrStatusColors = {
+  blocked: "#ef476f",
+  done: "#38d996",
+  working: "#ff9f1c",
+  idle: "#4f8fb8",
+  unknown: "#7d8790",
+  none: "#56616a",
+  empty: "#2b3236",
+  offline: "#2b3236",
+  shell: "#5d6a72"
+};
+
+function herdrPanesMarkup(panes) {
+  if (!Array.isArray(panes) || !panes.length) return "";
+  const limit = 7;
+  const shown = panes.length > limit ? panes.slice(0, limit - 1) : panes;
+  const dots = shown.map((paneStatus) => {
+    const name = String(paneStatus).replace(/[^a-z]/g, "");
+    const color = safeColor(herdrStatusColors[name], "#7d8790");
+    return `<span class="herdr-pane herdr-pane-${name}" style="--pane-color:${color}"></span>`;
+  });
+  if (panes.length > shown.length) {
+    dots.push(`<span class="herdr-pane-more">+${panes.length - shown.length}</span>`);
+  }
+  return `<span class="herdr-panes" aria-hidden="true">${dots.join("")}</span>`;
+}
+
+function herdrKeyMarkup(key, view) {
+  const status = String(view.status || "offline");
+  const glyph = view.glyph
+    ? herdrGlyphs[view.glyph] || ""
+    : key.herdrAction === "workspace"
+      ? herdrGlyphs[status] || ""
+      : herdrGlyphs[key.herdrAction] || "";
+  const classes = [
+    "key-screen",
+    "herdr-key",
+    `herdr-${status.replace(/[^a-z-]/g, "")}`,
+    view.focused ? "herdr-focused" : "",
+    view.enabled === false ? "herdr-disabled" : ""
+  ].filter(Boolean).join(" ");
+  return `
+    <div class="${classes}" style="--key-color:${safeColor(herdrStatusColors[status], "#56616a")}">
+      ${view.number ? `<span class="herdr-number">${escapeHtml(view.number)}</span>` : ""}
+      ${view.badge ? `<span class="herdr-badge">${escapeHtml(view.badge)}</span>` : ""}
+      <span class="herdr-glyph" aria-hidden="true">${escapeHtml(glyph)}</span>
+      <span class="key-label">${escapeHtml(view.label ?? key.title)}</span>
+      ${view.detail ? `<span class="herdr-detail">${escapeHtml(view.detail)}</span>` : ""}
+      ${herdrPanesMarkup(view.panes)}
+    </div>
+  `;
 }
 
 function setAutoSyncStatus(message, state) {
@@ -1300,8 +1588,9 @@ async function flushAgentVisualSync() {
   }
 }
 
-function keyScreenMarkup(key, secondary = false, playback = null) {
+function keyScreenMarkup(key, secondary = false, playback = null, index = null) {
   if (!key) return '<div class="key-screen empty"><span class="empty-plus">+</span></div>';
+  if (key.id === "herdr") return herdrKeyMarkup(key, herdrViewForKey(key, index));
   const visualKey = agentVisualKey(key);
   const isSound = key.id === "sound" && Boolean(key.sound);
   const visual = isSound ? null : selectedVisual(key, secondary);
@@ -1548,7 +1837,7 @@ function renderKeys() {
         ? `Key ${index + 1}: ${key.title}${playback ? ", sound playing" : ""}${key.agentMonitor ? `, agent ${agentKeyIsActive(key) ? "running" : "idle"}` : ""}`
         : `Key ${index + 1}: empty`
     );
-    button.innerHTML = keyScreenMarkup(key, getRuntimeVisualState(index), playback);
+    button.innerHTML = keyScreenMarkup(key, getRuntimeVisualState(index), playback, index);
     button.addEventListener("click", () => handleKeyClick(index));
     button.addEventListener("dragover", (event) => {
       event.preventDefault();
@@ -1646,14 +1935,17 @@ function updateInspector() {
   document.querySelector("#inspectorSelectionLabel").textContent = isCatalogPreview
     ? "ACTION PREVIEW"
     : hasSelection ? "SELECTED KEY" : "NO KEY SELECTED";
+  const managedByHerdr = hasSelection && isHerdrManagedKey(selectedIndex);
+  inspector.classList.toggle("herdr-managed", managedByHerdr);
   keyTitle.value = key?.title || "";
-  keyTitle.disabled = !assignedKey;
+  keyTitle.disabled = !assignedKey || managedByHerdr;
   keyTitle.setCustomValidity("");
   document.querySelector("#titleCount").textContent = `${keyTitle.value.length}/18`;
   miniKey.innerHTML = keyScreenMarkup(
     key,
     hasSelection ? getRuntimeVisualState(selectedIndex) : false,
-    playback
+    playback,
+    assignedKey ? selectedIndex : null
   );
   const canPreviewSound =
     hasSelection && key?.id === "sound" && Boolean(key.sound?.id);
@@ -1679,16 +1971,20 @@ function updateInspector() {
   document.querySelector("#previewActionName").textContent = name;
   document.querySelector("#previewActionType").textContent = subtitle;
   document.querySelector("#assignedActionName").textContent = name;
-  document.querySelector("#assignedActionDescription").textContent = description;
+  document.querySelector("#assignedActionDescription").textContent = managedByHerdr
+    ? `${description}. Managed by herdr: change it in ~/.config/herdr/plugins/config/n1-studio/deck.json.`
+    : description;
   document.querySelector("#assignedActionIcon").innerHTML = iconMarkup(key?.icon || "plus");
   document.querySelector("#assignedActionIcon").style.setProperty("--icon-color", safeColor(key?.color, "#667176"));
   const assignedActionState = document.querySelector("#assignedActionState");
-  assignedActionState.textContent = isCatalogPreview ? "PREVIEW" : assignedKey ? "ACTIVE" : "EMPTY";
+  assignedActionState.textContent = isCatalogPreview
+    ? "PREVIEW"
+    : managedByHerdr ? "HERDR" : assignedKey ? "ACTIVE" : "EMPTY";
   assignedActionState.dataset.state = isCatalogPreview
     ? "preview"
     : assignedKey ? "active" : "empty";
-  document.querySelector("#clearKeyButton").disabled = !assignedKey;
-  document.querySelector("#duplicateButton").disabled = !assignedKey;
+  document.querySelector("#clearKeyButton").disabled = !assignedKey || managedByHerdr;
+  document.querySelector("#duplicateButton").disabled = !assignedKey || managedByHerdr;
   const effectiveKey = key?.id === "ai-agent" ? materializeAgentAction(key, currentProfile) : key;
   const missingAgentPrompt = (
     effectiveKey?.id === "ai-agent"
@@ -1931,6 +2227,10 @@ async function previewSoundKey(index) {
 
 function handleKeyClick(index) {
   let duplicated = false;
+  if (duplicateSource !== null && duplicateSource !== index && isHerdrManagedKey(index)) {
+    duplicateSource = null;
+    showHerdrManagedToast();
+  }
   if (duplicateSource !== null && duplicateSource !== index) {
     snapshot();
     const duplicate = activeLayout()[duplicateSource]
@@ -2195,6 +2495,10 @@ function assignAction(index, actionId) {
     previewCatalogAction(actionId);
     return;
   }
+  if (isHerdrManagedKey(index)) {
+    showHerdrManagedToast();
+    return;
+  }
   snapshot();
   activeLayout()[index] = configuredCatalogAction(action, false, activeLayout()[index]);
   setRuntimeVisualState(index, false);
@@ -2214,8 +2518,16 @@ function showToast(title, message) {
   toastTimer = window.setTimeout(() => toast.classList.remove("visible"), 2800);
 }
 
+function showHerdrManagedToast() {
+  showToast("Managed by herdr", "This key follows the herdr deck. Only the optional slot can be changed here.");
+}
+
 function updateKey(patch) {
   if (!activeLayout()[selectedIndex]) return;
+  if (isHerdrManagedKey(selectedIndex)) {
+    showHerdrManagedToast();
+    return;
+  }
   snapshot();
   activeLayout()[selectedIndex] = { ...activeLayout()[selectedIndex], ...patch };
   renderKeys();
@@ -2402,7 +2714,7 @@ document.querySelectorAll(".category-tabs button").forEach((button) => {
 keyTitle.addEventListener("input", () => {
   document.querySelector("#titleCount").textContent = `${keyTitle.value.length}/18`;
   const key = activeLayout()[selectedIndex];
-  if (!key) return;
+  if (!key || isHerdrManagedKey(selectedIndex)) return;
   if (isAgentSession(key)) {
     const title = keyTitle.value.trim();
     if (!title) {
@@ -2445,6 +2757,10 @@ document.querySelectorAll("[data-icon-slot]").forEach((button) => {
   button.addEventListener("click", () => {
     if (!activeLayout()[selectedIndex]) {
       showToast("Assign an action first", "Icons belong to a configured deck key.");
+      return;
+    }
+    if (isHerdrManagedKey(selectedIndex)) {
+      showHerdrManagedToast();
       return;
     }
     pendingIconSlot = {
@@ -2528,6 +2844,10 @@ document.querySelectorAll("[data-visual-behavior]").forEach((button) => {
 
 document.querySelector("#clearKeyButton").addEventListener("click", () => {
   if (!activeLayout()[selectedIndex]) return;
+  if (isHerdrManagedKey(selectedIndex)) {
+    showHerdrManagedToast();
+    return;
+  }
   snapshot();
   activeLayout()[selectedIndex] = null;
   setRuntimeVisualState(selectedIndex, false);
@@ -2954,6 +3274,9 @@ undoButton.addEventListener("click", () => {
   if (!history.length) return;
   future.push(JSON.stringify(activeLayout()));
   replaceActiveLayout(JSON.parse(history.pop()));
+  if (currentProfile === herdrProfileId) {
+    reconcileHerdrProfile(herdrState.deck || defaultHerdrDeck, true);
+  }
   renderKeys();
   updateHistoryButtons();
   requestDeviceSync();
@@ -2963,6 +3286,9 @@ redoButton.addEventListener("click", () => {
   if (!future.length) return;
   history.push(JSON.stringify(activeLayout()));
   replaceActiveLayout(JSON.parse(future.pop()));
+  if (currentProfile === herdrProfileId) {
+    reconcileHerdrProfile(herdrState.deck || defaultHerdrDeck, true);
+  }
   renderKeys();
   updateHistoryButtons();
   requestDeviceSync();
@@ -3078,6 +3404,10 @@ document.querySelector(".page-control").addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button) return;
   if (button.dataset.pageAction === "add") {
+    if (currentProfile === herdrProfileId) {
+      showToast("One herdr page", "The page button flips through herdr workspaces on this profile.");
+      return;
+    }
     if (pageLayouts[currentProfile].length >= 8) {
       showToast("Page limit reached", "A profile can contain up to eight pages.");
       return;
@@ -3280,6 +3610,18 @@ document.querySelector("#deviceButton").addEventListener("click", async () => {
 
 function handleHardwareEvent(message) {
   if (!message || typeof message !== "object") return;
+  if (message.event === "herdr") {
+    handleHerdrState(message.state);
+    return;
+  }
+  if (message.event === "herdr_action") {
+    if (message.ok === false) {
+      showToast("herdr action not run", message.error || "herdr rejected the action.");
+    } else if (message.action === "approve" || message.action === "new-agent") {
+      showToast(message.message || "herdr action sent", message.name || "herdr");
+    }
+    return;
+  }
   if (message.event === "agent_status") {
     updateAgentStatuses(message.agents);
     return;
@@ -3303,7 +3645,14 @@ function handleHardwareEvent(message) {
       return;
     }
     if (physicalKey === 17) {
-      if (Number(message.state) === 1) cycleHardwarePage();
+      if (Number(message.state) !== 1) return;
+      if (currentProfile === herdrProfileId) {
+        backend.herdrNextPage().then(handleHerdrState).catch((error) => {
+          showToast("herdr page switch failed", error.message);
+        });
+      } else {
+        cycleHardwarePage();
+      }
       return;
     }
     if (physicalKey < 1 || physicalKey > 15) return;
@@ -3552,6 +3901,11 @@ async function initializeNativeState() {
     await backend.listen(handleHardwareEvent);
   } catch (error) {
     console.error("Native hardware event bridge unavailable", error);
+  }
+  try {
+    handleHerdrState(await backend.herdrStatus());
+  } catch (error) {
+    console.warn("herdr status unavailable", error);
   }
   revealStudio();
   renderStartupConnection("connecting", "Syncing the active profile…", "SYNC");

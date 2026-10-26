@@ -160,6 +160,23 @@ and includes the project in session identity so one repository cannot steal
 focus—or borrow the running indicator—from another. Leaving the field empty uses the
 Studio project directory.
 
+## herdr mission control
+
+Start [herdr](https://herdr.dev) and the N1 switches to the **herdr** profile by
+itself. Ten keys mirror your herdr workspaces with live agent state:
+
+- Red: an agent is waiting for approval
+- Green: an agent finished and you have not looked yet
+- Amber: an agent is working
+
+Press a workspace to land on the agent that needs you. **Next** walks the queue of
+waiting agents. **Approve** answers the oldest approval prompt. **Back** toggles
+between workspaces. **New** starts an agent beside your pane. The status strip counts
+working, waiting, and finished agents, and the dial steps through workspaces.
+
+herdr owns the layout through the bundled plugin; Studio only adds optional actions.
+See [docs/HERDR.md](docs/HERDR.md).
+
 ## Preview first, commit to the button later
 
 Click a blank area of the editor—or press Escape—to deselect the current deck key.

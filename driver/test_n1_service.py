@@ -443,3 +443,120 @@ class AgentDisplayTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HerdrDisplayTests(unittest.TestCase):
+    def workspace_key(self, status, **state):
+        return {
+            "id": "herdr",
+            "herdrAction": "workspace",
+            "title": "SPACE",
+            "herdr": {"status": status, "label": "n1-studio", "number": 14, **state},
+        }
+
+    def test_each_workspace_status_renders_distinct_key_art(self):
+        statuses = ("blocked", "done", "working", "idle", "unknown", "empty")
+        rendered = [
+            n1_service.render_key(self.workspace_key(status)).tobytes()
+            for status in statuses
+        ]
+
+        self.assertEqual(len(set(rendered)), len(statuses))
+
+    def test_focused_workspace_gets_a_bright_frame(self):
+        plain = n1_service.render_key(self.workspace_key("idle"))
+        focused = n1_service.render_key(self.workspace_key("idle", focused=True))
+
+        self.assertGreater(sum(focused.getpixel((3, 48))), sum(plain.getpixel((3, 48))))
+
+    def test_dialog_controls_override_the_configured_action_glyph(self):
+        def control(glyph):
+            key = {"id": "herdr", "herdrAction": "attention", "title": "NEXT"}
+            key["herdr"] = {"status": "blocked", "glyph": glyph, "label": "YES", "animate": False}
+            return n1_service.render_key(key).tobytes()
+
+        glyphs = ("prompt-up", "prompt-down", "prompt-select", "prompt-cancel", "shell", "dictate", "attention")
+        self.assertEqual(len({control(glyph) for glyph in glyphs}), len(glyphs))
+
+    def test_pane_pills_show_each_pane_and_animate_busy_ones(self):
+        plain = n1_service.render_key(self.workspace_key("idle")).tobytes()
+        pills = n1_service.render_key(self.workspace_key("idle", panes=["idle", "shell"])).tobytes()
+        self.assertNotEqual(plain, pills)
+
+        frames, _ = n1_service.load_herdr_frames(
+            self.workspace_key("idle", panes=["idle", "working"])
+        )
+        self.assertEqual(len(frames), n1_service.HERDR_ANIMATION_FRAMES)
+
+    def test_focused_workspace_is_filled_with_its_status_color(self):
+        plain = n1_service.render_key(self.workspace_key("working"))
+        focused = n1_service.render_key(self.workspace_key("working", focused=True))
+
+        self.assertGreater(sum(focused.getpixel((20, 80))), 2 * sum(plain.getpixel((20, 80))))
+
+    def test_only_blocked_and_working_workspaces_are_animated(self):
+        for status, expected in (("blocked", 8), ("working", 8), ("done", 1), ("idle", 1)):
+            frames, delays = n1_service.load_herdr_frames(self.workspace_key(status))
+            self.assertEqual(len(frames), expected, status)
+            self.assertEqual(len(delays), expected)
+
+        frames, _ = n1_service.load_herdr_frames(self.workspace_key("blocked"))
+        self.assertGreater(len(set(frames)), 1)
+
+    def test_action_keys_render_their_own_glyphs(self):
+        rendered = {
+            action: n1_service.render_key(
+                {
+                    "id": "herdr",
+                    "herdrAction": action,
+                    "title": action.upper(),
+                    "herdr": {"status": "idle", "label": "ACTION"},
+                }
+            ).tobytes()
+            for action in ("attention", "approve", "back", "new-agent", "interrupt")
+        }
+
+        self.assertEqual(len(set(rendered.values())), len(rendered))
+
+    def test_deck_state_updates_keys_and_strip_with_one_refresh(self):
+        device = FakeDevice()
+        device.start_gif_loop = lambda: device.calls.append(("start_gif_loop",))
+        device.set_key_gif_stream = lambda frames, delays, key: (
+            device.calls.append(("gif", key, len(frames))) or 0
+        )
+        with patch.object(n1_service, "connect", return_value=device):
+            result = n1_service._set_deck_state_once(
+                {
+                    "keys": [
+                        {"key": 1, "config": self.workspace_key("blocked")},
+                        {"key": 2, "config": self.workspace_key("idle")},
+                    ],
+                    "strip": [{"index": 2, "spec": {"label": "AGENTS", "lines": ["1 WAIT"]}}],
+                }
+            )
+
+        self.assertEqual(result, {"written": 2, "strip": 1, "animated": 1})
+        self.assertEqual(device.calls.count(("refresh",)), 1)
+        self.assertIn(("gif", 1, 8), device.calls)
+        self.assertTrue(
+            any(call[0] == "set_key_image" and call[1] == 18 for call in device.calls)
+        )
+
+    def test_deck_state_rejects_out_of_range_targets(self):
+        device = FakeDevice()
+        with patch.object(n1_service, "connect", return_value=device):
+            with self.assertRaises(ValueError):
+                n1_service._set_deck_state_once({"keys": [{"key": 16, "config": {}}]})
+            with self.assertRaises(ValueError):
+                n1_service._set_deck_state_once({"strip": [{"index": 3, "spec": {}}]})
+        self.assertEqual(device.calls, [])
+
+    def test_strip_override_replaces_only_the_requested_status_display(self):
+        payload = {"strip": [None, None, {"label": "AGENTS", "lines": ["3 WORK"]}]}
+
+        self.assertIsNone(n1_service.strip_override(payload, 0))
+        self.assertEqual(n1_service.strip_override(payload, 2)["label"], "AGENTS")
+        self.assertNotEqual(
+            n1_service.render_text_status({"label": "AGENTS", "lines": ["3 WORK"]}).tobytes(),
+            n1_service.render_dial_status().tobytes(),
+        )

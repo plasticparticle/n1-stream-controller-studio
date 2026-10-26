@@ -7,6 +7,7 @@ use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 #[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -20,6 +21,8 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_shell::ShellExt;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 
+mod herdr;
+
 const USB_ROOT: &str = "/sys/bus/usb/devices";
 const USB_VENDOR_ID: &str = "5548";
 const USB_PRODUCT_ID: &str = "1002";
@@ -30,6 +33,7 @@ const MAX_JSON_DEPTH: usize = 8;
 const MAX_JSON_STRING_BYTES: usize = 4_096;
 const MAX_DRIVER_LINE_BYTES: usize = 256_000;
 const MAX_PENDING_HARDWARE_EVENTS: usize = 16;
+const HERDR_LONG_PRESS: Duration = Duration::from_millis(450);
 const MAX_ACTIVE_ACTION_PROCESSES: usize = 16;
 const ACTIVE_CONFIG_RESTORE_ATTEMPTS: usize = 8;
 const DRIVER_START_RETRY_DELAYS: &[Duration] = &[
@@ -98,6 +102,7 @@ struct TestActionInput {
     agent_slot: Option<u8>,
     project_directory: Option<String>,
     agent_session: Option<AgentSessionInput>,
+    herdr_action: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -127,6 +132,10 @@ struct AppCore {
     pending_hardware_events: AtomicUsize,
     active_action_processes: Arc<AtomicUsize>,
     agent_statuses: Mutex<HashMap<String, AgentProcessStatus>>,
+    herdr: Mutex<herdr::Runtime>,
+    herdr_wake: Mutex<Option<mpsc::Sender<herdr::Wake>>>,
+    /// The herdr workspace key being held, with a token that identifies the press.
+    herdr_hold: Mutex<(u64, Option<(u64, u64)>)>,
     sync_guard: Mutex<()>,
     completed_deck_syncs: AtomicUsize,
     allow_shell_actions: bool,
@@ -661,6 +670,9 @@ impl AppCore {
             pending_hardware_events: AtomicUsize::new(0),
             active_action_processes: Arc::new(AtomicUsize::new(0)),
             agent_statuses: Mutex::new(empty_agent_statuses()),
+            herdr: Mutex::new(herdr::Runtime::new()),
+            herdr_wake: Mutex::new(None),
+            herdr_hold: Mutex::new((0, None)),
             sync_guard: Mutex::new(()),
             completed_deck_syncs: AtomicUsize::new(0),
             allow_shell_actions: std::env::var(SHELL_ACTION_OPT_IN).as_deref() == Ok("1"),
@@ -814,15 +826,285 @@ impl AppCore {
     }
 
     fn send_config_to_device(self: &Arc<Self>, mut driver_config: Value) -> Result<Value, String> {
-        let materialized = driver_config["keys"]
+        let keys = driver_config["keys"]
             .as_array()
             .expect("keys validated above")
+            .clone();
+        let materialized = keys
             .iter()
             .map(|key| self.materialize_key(key))
             .collect::<Result<Vec<_>, _>>()?;
         driver_config["keys"] = Value::Array(materialized);
-        self.driver
-            .request(self.clone(), "sync", driver_config, Duration::from_secs(90))
+
+        // herdr keys show live session state, so the transfer carries the current
+        // rendering and records it as the baseline for later live updates.
+        let has_herdr_keys = keys.iter().any(herdr::is_herdr_key);
+        if has_herdr_keys {
+            let mut runtime = lock(&self.herdr);
+            let slot_count = (0..keys.len())
+                .filter(|index| herdr::workspace_slot(&keys, *index).is_some())
+                .count();
+            if slot_count > 0 {
+                runtime.set_slot_count(slot_count);
+            }
+            let rendered = runtime.render_keys(&keys);
+            for (index, key) in &rendered {
+                driver_config["keys"][*index] = key.clone();
+            }
+            let strip = if herdr::has_workspace_keys(&keys) {
+                runtime.strip()
+            } else {
+                Default::default()
+            };
+            driver_config["strip"] = json!(strip);
+            runtime.mark_rendered(&rendered, &strip);
+        } else {
+            lock(&self.herdr).forget_rendered();
+        }
+        let result =
+            self.driver
+                .request(self.clone(), "sync", driver_config, Duration::from_secs(90));
+        if result.is_err() && has_herdr_keys {
+            lock(&self.herdr).forget_rendered();
+        }
+        result
+    }
+
+    fn apply_herdr_state(
+        self: &Arc<Self>,
+        snapshot: Option<herdr::Snapshot>,
+        prompt: Option<herdr::Prompt>,
+        deck: Option<Result<herdr::DeckConfig, String>>,
+    ) {
+        let state = {
+            let mut runtime = lock(&self.herdr);
+            let mut changed = runtime.update(snapshot);
+            changed |= runtime.set_prompt(prompt);
+            changed |= runtime.expire_picker();
+            if let Some(deck) = deck {
+                let (deck, error) = match deck {
+                    Ok(deck) => (deck, None),
+                    Err(error) => (herdr::DeckConfig::default(), Some(error)),
+                };
+                if runtime.deck != deck || runtime.deck_error != error {
+                    runtime.deck = deck;
+                    runtime.deck_error = error;
+                    changed = true;
+                }
+            }
+            changed.then(|| runtime.public_state())
+        };
+        if let Some(state) = state {
+            self.emit(json!({"event": "herdr", "state": state}));
+            self.render_herdr_changes();
+        }
+    }
+
+    fn render_herdr_changes(self: &Arc<Self>) {
+        let _sync = lock(&self.sync_guard);
+        if self.driver.public_state().status != "ready" {
+            return;
+        }
+        let Some(keys) = lock(&self.active_config)
+            .as_ref()
+            .and_then(|config| config.get("keys"))
+            .and_then(Value::as_array)
+            .cloned()
+        else {
+            return;
+        };
+        if !keys.iter().any(herdr::is_herdr_key) {
+            return;
+        }
+        let (key_updates, strip_updates) = lock(&self.herdr).render_changes(&keys);
+        if key_updates.is_empty() && strip_updates.is_empty() {
+            return;
+        }
+        if let Err(error) = self.driver.request(
+            self.clone(),
+            "deck_state",
+            json!({"keys": key_updates, "strip": strip_updates}),
+            Duration::from_secs(30),
+        ) {
+            lock(&self.herdr).forget_rendered();
+            self.emit(json!({
+                "event": "driver_log",
+                "level": "error",
+                "message": format!("herdr deck update failed: {error}")
+            }));
+        }
+    }
+
+    fn herdr_next_page(self: &Arc<Self>) -> Value {
+        self.update_herdr(|runtime| {
+            runtime.close_picker();
+            runtime.next_page();
+        })
+    }
+
+    /// Changes local deck state, then publishes and renders it.
+    fn update_herdr(self: &Arc<Self>, change: impl FnOnce(&mut herdr::Runtime)) -> Value {
+        let state = {
+            let mut runtime = lock(&self.herdr);
+            change(&mut runtime);
+            runtime.public_state()
+        };
+        self.emit(json!({"event": "herdr", "state": state.clone()}));
+        self.render_herdr_changes();
+        state
+    }
+
+    /// Long press on a workspace key: toggles the list of that workspace's panes.
+    fn toggle_herdr_picker(self: &Arc<Self>, key: u64) {
+        let slot = lock(&self.active_config)
+            .as_ref()
+            .and_then(|config| config.get("keys"))
+            .and_then(Value::as_array)
+            .and_then(|keys| herdr::workspace_slot(keys, key.checked_sub(1)? as usize));
+        let mut error = None;
+        self.update_herdr(|runtime| {
+            if !runtime.close_picker()
+                && let Err(message) = slot
+                    .ok_or_else(|| "No herdr workspace on this key".to_string())
+                    .and_then(|slot| runtime.open_picker(slot))
+            {
+                error = Some(message);
+            }
+        });
+        if let Some(error) = error {
+            self.emit(json!({
+                "event": "herdr_action",
+                "ok": false,
+                "key": key,
+                "action": "panes",
+                "name": "herdr panes",
+                "error": error
+            }));
+        }
+    }
+
+    /// herdr workspace keys act on release so that holding them can open the pane list.
+    fn handle_herdr_workspace_button(self: &Arc<Self>, key: u64, pressed: bool, action: &Value) {
+        if pressed {
+            let token = {
+                let mut hold = lock(&self.herdr_hold);
+                hold.0 += 1;
+                hold.1 = Some((key, hold.0));
+                hold.0
+            };
+            let core = self.clone();
+            thread::spawn(move || {
+                thread::sleep(HERDR_LONG_PRESS);
+                let held = {
+                    let mut hold = lock(&core.herdr_hold);
+                    let held = hold.1 == Some((key, token));
+                    if held {
+                        hold.1 = None;
+                    }
+                    held
+                };
+                if held {
+                    core.toggle_herdr_picker(key);
+                }
+            });
+            return;
+        }
+        let short_press = {
+            let mut hold = lock(&self.herdr_hold);
+            let short = hold.1.is_some_and(|(held, _)| held == key);
+            if short {
+                hold.1 = None;
+            }
+            short
+        };
+        if short_press
+            && self.accept_hardware_action("button:global", Duration::from_millis(100))
+            && self.accept_hardware_action(&format!("button:{key}"), Duration::from_millis(120))
+        {
+            let _ = self.execute_action(action, key as i64);
+        }
+    }
+
+    fn wake_herdr_monitor(&self) {
+        if let Some(wake) = lock(&self.herdr_wake).as_ref() {
+            let _ = wake.send(herdr::Wake::Event);
+        }
+    }
+
+    fn execute_herdr_action(self: &Arc<Self>, action: &Value, key: i64) -> Result<(), String> {
+        let keys = lock(&self.active_config)
+            .as_ref()
+            .and_then(|config| config.get("keys"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let index = usize::try_from(key - 1).ok();
+        // While the focused agent waits, the action keys answer its dialog instead.
+        let prompt_action = index.and_then(|index| lock(&self.herdr).prompt_action(&keys, index));
+        let herdr_action = prompt_action.unwrap_or_else(|| {
+            action
+                .get("herdrAction")
+                .and_then(Value::as_str)
+                .unwrap_or("workspace")
+        });
+        let slot = if herdr_action == "workspace" {
+            index.and_then(|index| herdr::workspace_slot(&keys, index))
+        } else {
+            None
+        };
+        let picker_open = herdr_action == "workspace" && lock(&self.herdr).picker_open();
+        let result = (|| {
+            let plan = lock(&self.herdr).plan(herdr_action, slot)?;
+            if plan == herdr::Plan::ClosePicker {
+                return Ok("Pane list closed".to_string());
+            }
+            let socket = herdr::socket_path().ok_or("Unable to locate the herdr socket")?;
+            let message = herdr::execute_plan(&socket, &plan, &new_herdr_agent_name())?;
+            if plan.changes_focus() {
+                raise_herdr_terminal();
+            }
+            if let herdr::Plan::Dictate { pane, start } = &plan {
+                self.update_herdr(|runtime| {
+                    if *start {
+                        runtime.begin_dictation(pane);
+                    } else {
+                        runtime.end_dictation();
+                    }
+                });
+            }
+            Ok::<_, String>(message)
+        })();
+        if picker_open && result.is_ok() {
+            self.update_herdr(|runtime| {
+                runtime.close_picker();
+            });
+        }
+        self.wake_herdr_monitor();
+        let name = action_name(action, key);
+        match result {
+            Ok(message) => {
+                self.emit(json!({
+                    "event": "herdr_action",
+                    "ok": true,
+                    "key": key,
+                    "action": herdr_action,
+                    "name": name,
+                    "message": message
+                }));
+                Ok(())
+            }
+            Err(error) => {
+                self.emit(json!({
+                    "event": "herdr_action",
+                    "ok": false,
+                    "key": key,
+                    "action": herdr_action,
+                    "name": name,
+                    "error": &error
+                }));
+                Err(error)
+            }
+        }
     }
 
     fn schedule_active_config_restore(self: &Arc<Self>) {
@@ -884,6 +1166,10 @@ impl AppCore {
             "profile": "visual-preview",
             "keys": keys
         }))?;
+        if herdr::is_herdr_key(&action) {
+            // herdr keys depend on live session state; the queued full sync renders them.
+            return Ok(json!({"ok": true, "key": key, "animated": false}));
+        }
         let config = self.materialize_key(&action)?;
         let result = self.driver.request(
             self.clone(),
@@ -1202,6 +1488,9 @@ impl AppCore {
     }
 
     fn execute_action(self: &Arc<Self>, action: &Value, key: i64) -> Result<(), String> {
+        if herdr::is_herdr_key(action) {
+            return self.execute_herdr_action(action, key);
+        }
         let name = action_name(action, key);
         let is_sound = action.get("id").and_then(Value::as_str) == Some("sound");
         let is_screenshot = screenshot_kind(action).is_some();
@@ -1569,7 +1858,46 @@ impl AppCore {
     }
 
     fn handle_hardware_input(self: Arc<Self>, event: Value) {
+        let herdr_deck = lock(&self.active_config)
+            .as_ref()
+            .and_then(|config| config.get("keys"))
+            .and_then(Value::as_array)
+            .is_some_and(|keys| herdr::has_workspace_keys(keys));
         match event.get("type").and_then(Value::as_str) {
+            Some("knob_rotate") if herdr_deck => {
+                if !self.accept_hardware_action("knob:rotate", Duration::from_millis(80)) {
+                    return;
+                }
+                let right = event.get("direction").and_then(Value::as_str) == Some("right");
+                // The dial moves through a waiting dialog before it moves through workspaces.
+                let action = match (lock(&self.herdr).prompt_active(), right) {
+                    (true, true) => "prompt-down",
+                    (true, false) => "prompt-up",
+                    (false, true) => "next-workspace",
+                    (false, false) => "previous-workspace",
+                };
+                let _ = self.execute_herdr_action(
+                    &json!({"id": "herdr", "herdrAction": action, "name": "herdr dial"}),
+                    0,
+                );
+                return;
+            }
+            Some("knob_press") if herdr_deck => {
+                if event.get("state").and_then(Value::as_i64) == Some(1)
+                    && self.accept_hardware_action("knob:press", Duration::from_millis(120))
+                {
+                    let action = if lock(&self.herdr).prompt_active() {
+                        "prompt-select"
+                    } else {
+                        "attention"
+                    };
+                    let _ = self.execute_herdr_action(
+                        &json!({"id": "herdr", "herdrAction": action, "name": "herdr dial"}),
+                        0,
+                    );
+                }
+                return;
+            }
             Some("knob_rotate") => {
                 if !self.accept_hardware_action("knob:rotate", Duration::from_millis(20)) {
                     return;
@@ -1616,6 +1944,13 @@ impl AppCore {
         let Some(action) = action.filter(|action| !action.is_null()) else {
             return;
         };
+        if herdr_deck
+            && herdr::is_herdr_key(&action)
+            && action.get("herdrAction").and_then(Value::as_str) == Some("workspace")
+        {
+            self.handle_herdr_workspace_button(key_number, state == 1, &action);
+            return;
+        }
 
         let secondary = action
             .pointer("/visuals/secondary")
@@ -2498,6 +2833,206 @@ fn start_agent_monitor(core: Arc<AppCore>) {
     });
 }
 
+fn start_herdr_monitor(core: Arc<AppCore>) {
+    let (wake, events) = mpsc::channel();
+    *lock(&core.herdr_wake) = Some(wake.clone());
+    thread::spawn(move || {
+        let generation = Arc::new(AtomicUsize::new(0));
+        let mut subscribed: Option<BTreeSet<String>> = None;
+        let mut last_subscription = None::<Instant>;
+        let mut deck_stamp = None;
+        let mut deck_loaded = false;
+        loop {
+            let socket = herdr::socket_path();
+            let snapshot = socket
+                .as_deref()
+                .ok_or_else(|| "Unable to locate the herdr socket".to_string())
+                .and_then(|socket| {
+                    herdr::request(
+                        socket,
+                        "session.snapshot",
+                        json!({}),
+                        herdr::REQUEST_TIMEOUT,
+                    )
+                })
+                .and_then(|result| herdr::parse_snapshot(&result));
+
+            let deck_path = herdr::deck_config_path();
+            let stamp = deck_path.as_deref().and_then(herdr::deck_config_stamp);
+            let deck = (!deck_loaded || stamp != deck_stamp).then(|| {
+                deck_loaded = true;
+                deck_stamp = stamp;
+                match (deck_path.as_deref(), stamp) {
+                    (Some(path), Some(_)) => herdr::load_deck_config(path),
+                    _ => Ok(herdr::DeckConfig::default()),
+                }
+            });
+
+            match (&socket, &snapshot) {
+                (Some(socket), Ok(snapshot)) => {
+                    let panes = snapshot
+                        .agents
+                        .iter()
+                        .map(|agent| agent.pane_id.clone())
+                        .collect::<BTreeSet<_>>();
+                    let may_subscribe = last_subscription
+                        .is_none_or(|started| started.elapsed() >= Duration::from_secs(1));
+                    if subscribed.as_ref() != Some(&panes) && may_subscribe {
+                        let own = generation.fetch_add(1, Ordering::AcqRel) + 1;
+                        herdr::spawn_subscription(
+                            socket.clone(),
+                            panes.clone(),
+                            generation.clone(),
+                            own,
+                            wake.clone(),
+                        );
+                        subscribed = Some(panes);
+                        last_subscription = Some(Instant::now());
+                    }
+                }
+                _ => {
+                    if subscribed.take().is_some() {
+                        generation.fetch_add(1, Ordering::AcqRel);
+                    }
+                }
+            }
+            let prompt = match (&socket, &snapshot) {
+                (Some(socket), Ok(snapshot)) => herdr::read_prompt(socket, snapshot),
+                _ => None,
+            };
+            let connected = snapshot.is_ok();
+            core.apply_herdr_state(snapshot.ok(), prompt, deck);
+
+            // Events only wake the loop; the snapshot stays the single source of truth.
+            let mut handle = |message: herdr::Wake| {
+                if let herdr::Wake::SubscriptionEnded(ended) = message
+                    && ended == generation.load(Ordering::Acquire)
+                {
+                    subscribed = None;
+                }
+            };
+            let idle_wait = Duration::from_millis(if connected { 1_500 } else { 2_000 });
+            if let Ok(message) = events.recv_timeout(idle_wait) {
+                handle(message);
+                thread::sleep(Duration::from_millis(50));
+                while let Ok(message) = events.try_recv() {
+                    handle(message);
+                }
+            }
+        }
+    });
+}
+
+fn new_herdr_agent_name() -> String {
+    let mut value = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or_default();
+    let mut digits = Vec::new();
+    loop {
+        digits.push(char::from_digit((value % 36) as u32, 36).unwrap_or('0'));
+        value /= 36;
+        if value == 0 {
+            break;
+        }
+    }
+    format!("n1-{}", digits.iter().rev().collect::<String>())
+}
+
+fn is_herdr_client(cmdline: &[u8]) -> bool {
+    let mut arguments = cmdline
+        .split(|byte| *byte == 0)
+        .filter(|argument| !argument.is_empty());
+    let Some(program) = arguments.next() else {
+        return false;
+    };
+    let program = Path::new(OsStr::from_bytes(program));
+    program.file_name() == Some(OsStr::new("herdr"))
+        && arguments.next().is_none_or(|argument| {
+            !matches!(
+                argument,
+                b"server" | b"api" | b"agent" | b"pane" | b"plugin"
+            )
+        })
+}
+
+fn herdr_client_pids(proc_root: &Path) -> Vec<u32> {
+    fs::read_dir(proc_root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let pid = entry.file_name().to_string_lossy().parse::<u32>().ok()?;
+            let cmdline = fs::read(entry.path().join("cmdline")).ok()?;
+            is_herdr_client(&cmdline).then_some(pid)
+        })
+        .collect()
+}
+
+fn hyprland_windows_from_json(output: &str) -> Vec<VisibleWindow> {
+    serde_json::from_str::<Value>(output)
+        .ok()
+        .and_then(|clients| clients.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|client| {
+            let address = client.get("address")?.as_str()?;
+            let pid = u32::try_from(client.get("pid")?.as_u64()?).ok()?;
+            (address.len() > 2
+                && address.starts_with("0x")
+                && address[2..]
+                    .chars()
+                    .all(|character| character.is_ascii_hexdigit()))
+            .then(|| VisibleWindow {
+                id: address.to_string(),
+                pid,
+            })
+        })
+        .collect()
+}
+
+/// Brings the terminal hosting the herdr client to the front after a focus change.
+fn raise_herdr_terminal() {
+    let clients = herdr_client_pids(Path::new("/proc"));
+    if clients.is_empty() {
+        return;
+    }
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
+        && let Ok(program) = trusted_program_path("hyprctl")
+    {
+        let Ok(output) = Command::new(&program)
+            .args(["clients", "-j"])
+            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+        else {
+            return;
+        };
+        let windows = hyprland_windows_from_json(&String::from_utf8_lossy(&output.stdout));
+        if let Some(address) = clients
+            .iter()
+            .find_map(|pid| visible_window_id_for_process(Path::new("/proc"), &windows, *pid))
+        {
+            run_wmctrl(
+                &program,
+                &["dispatch", "focuswindow", &format!("address:{address}")],
+            );
+        }
+        return;
+    }
+    let Ok(program) = trusted_program_path("wmctrl") else {
+        return;
+    };
+    let windows = visible_windows();
+    if let Some(window_id) = clients
+        .iter()
+        .find_map(|pid| visible_window_id_for_process(Path::new("/proc"), &windows, *pid))
+    {
+        run_wmctrl(&program, &["-i", "-a", &window_id]);
+    }
+}
+
 fn resolve_action_command(action: &Value, allow_shell_actions: bool) -> Option<ResolvedAction> {
     let id = action.get("id").and_then(Value::as_str)?;
     let target = action
@@ -2624,6 +3159,7 @@ fn validated_test_action(input: TestActionInput) -> Result<Value, String> {
         return Err("Unsupported action type".into());
     }
     let is_agent = input.id == "ai-agent";
+    let title = input.title.unwrap_or_default();
     let target = input.target.unwrap_or_default();
     if target.len() > 2_048 {
         return Err("Action targets must be no longer than 2,048 bytes".into());
@@ -2640,7 +3176,7 @@ fn validated_test_action(input: TestActionInput) -> Result<Value, String> {
         "screenshotClipboard": input.screenshot_clipboard.unwrap_or(false)
     });
     if is_agent {
-        action["title"] = Value::String(input.title.unwrap_or_default());
+        action["title"] = Value::String(title.clone());
         action["agent"] = Value::String(input.agent.unwrap_or_else(|| "codex".into()));
         action["agentWorkflow"] =
             Value::String(input.agent_workflow.unwrap_or_else(|| "new".into()));
@@ -2661,6 +3197,14 @@ fn validated_test_action(input: TestActionInput) -> Result<Value, String> {
             });
         }
         validate_agent_action(&action)?;
+    }
+    if action["id"] == "herdr" {
+        let herdr_action = input
+            .herdr_action
+            .filter(|herdr_action| herdr::valid_action(herdr_action))
+            .ok_or("herdr keys need a supported herdr action")?;
+        action["herdrAction"] = Value::String(herdr_action);
+        action["title"] = Value::String(title.clone());
     }
     if let Some(id) = input.sound_id {
         if !valid_stored_asset_id(&id) || !has_asset_extension(&id, SOUND_EXTENSIONS) {
@@ -2734,6 +3278,14 @@ fn validate_sync_payload(payload: &Value) -> Result<(), String> {
             .ok_or_else(|| "Each configured key must have an action type".to_string())?;
         if !valid_action_id(id) {
             return Err(format!("Unsupported action type: {id}"));
+        }
+        if id == "herdr"
+            && !key
+                .get("herdrAction")
+                .and_then(Value::as_str)
+                .is_some_and(herdr::valid_action)
+        {
+            return Err("herdr keys need a supported herdr action".into());
         }
         if id == "ai-agent" {
             validate_agent_action(key)?;
@@ -2848,6 +3400,7 @@ fn valid_action_id(id: &str) -> bool {
             | "music"
             | "lock"
             | "ai-agent"
+            | "herdr"
     ) || (id.starts_with("custom-")
         && id.len() > "custom-".len()
         && id.len() <= 64
@@ -3229,6 +3782,19 @@ async fn sync_key_visual(
 }
 
 #[tauri::command]
+fn herdr_status(state: State<'_, AppState>) -> Value {
+    lock(&state.0.herdr).public_state()
+}
+
+#[tauri::command]
+async fn herdr_next_page(state: State<'_, AppState>) -> Result<Value, String> {
+    let core = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || core.herdr_next_page())
+        .await
+        .map_err(error_text)
+}
+
+#[tauri::command]
 fn store_asset(state: State<'_, AppState>, payload: Value) -> Result<Value, String> {
     state.0.store_asset(payload)
 }
@@ -3362,6 +3928,8 @@ pub fn run() {
             start_window_drag,
             sync_deck,
             sync_key_visual,
+            herdr_status,
+            herdr_next_page,
             store_asset,
             store_sound,
             set_brightness,
@@ -3380,6 +3948,7 @@ pub fn run() {
                 eprintln!("[N1 Studio] Could not update the login startup entry: {error}");
             }
             start_agent_monitor(core.clone());
+            start_herdr_monitor(core.clone());
             if let Err(error) = core.driver.start(core.clone()) {
                 core.driver.schedule_retry(core.clone(), error);
             }
@@ -4034,5 +4603,51 @@ mod tests {
         assert!(!valid_hardware_input(
             &json!({"type": "knob_rotate", "knob": "knob_1", "direction": "up"})
         ));
+    }
+
+    #[test]
+    fn recognizes_interactive_herdr_clients_but_not_helper_commands() {
+        assert!(is_herdr_client(b"herdr\0"));
+        assert!(is_herdr_client(b"/usr/bin/herdr\0--session\0work\0"));
+        assert!(!is_herdr_client(b"/usr/bin/herdr\0server\0"));
+        assert!(!is_herdr_client(b"herdr\0agent\0list\0"));
+        assert!(!is_herdr_client(b"/usr/bin/herdr-helper\0"));
+        assert!(!is_herdr_client(b""));
+    }
+
+    #[test]
+    fn reads_hyprland_window_addresses_without_trusting_other_fields() {
+        let windows = hyprland_windows_from_json(
+            r#"[{"address":"0x55d1","pid":6616,"title":"herdr"},
+                {"address":"not-hex","pid":7},
+                {"address":"0xabc","pid":-1}]"#,
+        );
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].id, "0x55d1");
+        assert_eq!(windows[0].pid, 6616);
+        assert!(hyprland_windows_from_json("garbage").is_empty());
+    }
+
+    #[test]
+    fn generates_valid_herdr_agent_names() {
+        let name = new_herdr_agent_name();
+        assert!(name.starts_with("n1-"));
+        assert!(name.len() <= 32);
+        assert!(name.chars().all(|character| character.is_ascii_lowercase()
+            || character.is_ascii_digit()
+            || character == '-'));
+    }
+
+    #[test]
+    fn validates_herdr_keys_in_sync_payloads() {
+        let mut keys = vec![Value::Null; 15];
+        keys[0] = json!({"id": "herdr", "herdrAction": "workspace", "title": "SPACE"});
+        keys[10] = json!({"id": "herdr", "herdrAction": "approve", "title": "APPROVE"});
+        assert!(validate_sync_payload(&json!({"profile": "herdr", "keys": keys.clone()})).is_ok());
+
+        keys[1] = json!({"id": "herdr", "herdrAction": "kill-server"});
+        assert!(validate_sync_payload(&json!({"profile": "herdr", "keys": keys.clone()})).is_err());
+        keys[1] = json!({"id": "herdr"});
+        assert!(validate_sync_payload(&json!({"profile": "herdr", "keys": keys})).is_err());
     }
 }

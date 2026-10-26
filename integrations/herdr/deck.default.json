@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "newAgentKind": "claude",
+  "autoSwitch": true,
+  "keys": [
+    "workspace", "workspace", "workspace", "workspace", "workspace",
+    "workspace", "workspace", "workspace", "workspace", "workspace",
+    "attention", "approve", "back", "new-agent",
+    { "action": "dictate", "optional": true }
+  ]
+}
