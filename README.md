@@ -257,6 +257,10 @@ sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
   nodejs python3.12 python3.12-venv git wmctrl
 ```
 
+The driver environment is pinned to Python 3.12. If your distribution ships a newer
+default `python3` without a `python3.12` package, `npm run setup:driver` also finds a
+uv-managed interpreter installed with `uv python install 3.12`.
+
 Rust is also required. Install it from the
 [official Rust installer page](https://www.rust-lang.org/tools/install), then open a
 new terminal or load Cargo into the current shell:
