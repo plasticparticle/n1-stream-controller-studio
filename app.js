@@ -115,7 +115,7 @@ const icons = {
   herdrBack: '<svg viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"></path></svg>',
   herdrForward: '<svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>',
   herdrStop: '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>',
-  herdrMic: '<svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8"></path></svg>',
+  herdrMic: '<svg viewBox="0 0 24 24"><rect x="9" y="2.5" width="6" height="11" rx="3"></rect><path d="M10.5 6h3M10.5 8.5h3M5.5 10.5a6.5 6.5 0 0 0 13 0M12 17v3.5M8.5 20.5h7M2.5 6.5a9 9 0 0 0 0 7M21.5 6.5a9 9 0 0 1 0 7"></path></svg>',
   codexAgent: '<svg viewBox="0 0 24 24"><path d="m12 3 3 1.7 3.4-.1.1 3.4 1.7 3-1.7 3-.1 3.4-3.4-.1-3 1.7-3-1.7-3.4.1-.1-3.4-1.7-3 1.7-3 .1-3.4 3.4.1L12 3Z"></path><circle cx="12" cy="12" r="3.2"></circle></svg>',
   claudeAgent: '<svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6 5.6 18.4"></path><circle cx="12" cy="12" r="2.5"></circle></svg>',
   geminiAgent: '<svg viewBox="0 0 24 24"><path d="M12 2c.8 6.3 3.7 9.2 10 10-6.3.8-9.2 3.7-10 10-.8-6.3-3.7-9.2-10-10 6.3-.8 9.2-3.7 10-10Z"></path></svg>',
@@ -1266,7 +1266,6 @@ const herdrGlyphs = {
   back: "←",
   "new-agent": "+",
   interrupt: "■",
-  dictate: "🎙",
   "next-workspace": "›",
   "previous-workspace": "‹",
   "prompt-up": "▲",
@@ -1320,7 +1319,9 @@ function herdrKeyMarkup(key, view) {
     <div class="${classes}" style="--key-color:${safeColor(herdrStatusColors[status], "#56616a")}">
       ${view.number ? `<span class="herdr-number">${escapeHtml(view.number)}</span>` : ""}
       ${view.badge ? `<span class="herdr-badge">${escapeHtml(view.badge)}</span>` : ""}
-      <span class="herdr-glyph" aria-hidden="true">${escapeHtml(glyph)}</span>
+      ${(view.glyph || key.herdrAction) === "dictate"
+        ? `<span class="herdr-glyph herdr-mic${view.recording ? " herdr-recording" : ""}" aria-hidden="true">${icons.herdrMic}</span>`
+        : `<span class="herdr-glyph" aria-hidden="true">${escapeHtml(glyph)}</span>`}
       <span class="key-label">${escapeHtml(view.label ?? key.title)}</span>
       ${view.detail ? `<span class="herdr-detail">${escapeHtml(view.detail)}</span>` : ""}
       ${herdrPanesMarkup(view.panes)}

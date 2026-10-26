@@ -550,11 +550,6 @@ def draw_herdr_glyph(
         draw.line((cx, cy - 12, cx, cy + 12), fill=color, width=4)
     elif glyph == "interrupt":
         draw.rounded_rectangle((cx - 10, cy - 10, cx + 10, cy + 10), radius=3, fill=color)
-    elif glyph == "dictate":
-        draw.rounded_rectangle((cx - 6, cy - 15, cx + 6, cy + 4), radius=6, fill=color)
-        draw.arc((cx - 11, cy - 9, cx + 11, cy + 10), 0, 180, fill=color, width=3)
-        draw.line((cx, cy + 10, cx, cy + 15), fill=color, width=3)
-        draw.line((cx - 6, cy + 15, cx + 6, cy + 15), fill=color, width=3)
     elif glyph == "shell":
         draw.line((cx - 13, cy - 8, cx - 4, cy, cx - 13, cy + 8), fill=color, width=4, joint="curve")
         draw.line((cx, cy + 9, cx + 13, cy + 9), fill=color, width=4)
@@ -580,6 +575,78 @@ def draw_herdr_glyph(
             width=4,
             joint="curve",
         )
+
+
+def draw_microphone(
+    image: Image.Image,
+    color: tuple[int, int, int],
+    progress: float,
+    recording: bool,
+) -> Image.Image:
+    """A studio microphone drawn at 4x and scaled down for smooth edges; sound waves
+    pulse out of it while recording."""
+    scale = 4
+    size = (KEY_SIZE[0] * scale, KEY_SIZE[1] * scale)
+    mask = Image.new("L", size, 0)
+    grille = Image.new("L", size, 0)
+    draw = ImageDraw.Draw(mask)
+    grille_draw = ImageDraw.Draw(grille)
+    cx, cy = 48 * scale, 33 * scale
+
+    def box(left: float, top: float, right: float, bottom: float) -> tuple[int, ...]:
+        return tuple(round(value * scale) for value in (left, top, right, bottom))
+
+    # Capsule with a grille of horizontal slots.
+    draw.rounded_rectangle(box(40, 15, 56, 41), radius=8 * scale, fill=255)
+    for row in (22, 27, 32):
+        grille_draw.rounded_rectangle(box(43, row, 53, row + 2), radius=scale, fill=255)
+    # Holder, stem, and base.
+    draw.arc(box(34, 21, 62, 49), 10, 170, fill=255, width=3 * scale)
+    draw.rounded_rectangle(box(46.5, 48, 49.5, 55), radius=scale, fill=255)
+    draw.rounded_rectangle(box(40, 54, 56, 57), radius=2 * scale, fill=255)
+
+    waves = Image.new("L", size, 0)
+    waves_draw = ImageDraw.Draw(waves)
+    if recording:
+        for ring in range(3):
+            phase = (progress + ring / 3) % 1.0
+            radius = 14 + 14 * phase
+            strength = int(255 * (1.0 - phase) ** 1.4)
+            for start, end in ((-50, 50), (130, 230)):
+                waves_draw.arc(
+                    (
+                        cx - radius * scale,
+                        cy - radius * scale,
+                        cx + radius * scale,
+                        cy + radius * scale,
+                    ),
+                    start,
+                    end,
+                    fill=strength,
+                    width=3 * scale,
+                )
+    else:
+        for radius, strength in ((15, 150), (20, 80)):
+            for start, end in ((-40, 40), (140, 220)):
+                waves_draw.arc(
+                    (
+                        cx - radius * scale,
+                        cy - radius * scale,
+                        cx + radius * scale,
+                        cy + radius * scale,
+                    ),
+                    start,
+                    end,
+                    fill=strength,
+                    width=2 * scale,
+                )
+
+    shrink = lambda layer: layer.resize(KEY_SIZE, Image.Resampling.LANCZOS)
+    mask, grille, waves = shrink(mask), shrink(grille), shrink(waves)
+    shade = scale_color(color, 0.35)
+    result = Image.composite(Image.new("RGB", KEY_SIZE, color), image, waves)
+    result = Image.composite(Image.new("RGB", KEY_SIZE, color), result, mask)
+    return Image.composite(Image.new("RGB", KEY_SIZE, shade), result, grille)
 
 
 def herdr_pane_statuses(state: dict[str, Any]) -> list[str]:
@@ -696,7 +763,11 @@ def render_herdr_key(key: dict[str, Any], progress: float = 0.0) -> Image.Image:
         glyph_color = accent
     else:
         glyph_color = lift_color(accent, 80)
-    draw_herdr_glyph(draw, glyph, glyph_color, progress)
+    if glyph == "dictate":
+        image = draw_microphone(image, glyph_color, progress, state.get("recording") is True)
+        draw = ImageDraw.Draw(image)
+    else:
+        draw_herdr_glyph(draw, glyph, glyph_color, progress)
 
     label = state.get("label")
     title, font = fit_text(draw, str(key.get("title") or "" if label is None else label), 84)

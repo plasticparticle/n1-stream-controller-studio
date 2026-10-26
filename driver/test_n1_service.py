@@ -494,6 +494,15 @@ class HerdrDisplayTests(unittest.TestCase):
 
         self.assertGreater(sum(focused.getpixel((20, 80))), 2 * sum(plain.getpixel((20, 80))))
 
+    def test_dictate_key_shows_moving_sound_waves_while_recording(self):
+        def dictate(progress, **state):
+            key = {"id": "herdr", "herdrAction": "dictate", "title": "DICTATE"}
+            key["herdr"] = {"status": "blocked", "label": "REC", **state}
+            return n1_service.render_herdr_key(key, progress).tobytes()
+
+        self.assertNotEqual(dictate(0.0, recording=True), dictate(0.0))
+        self.assertNotEqual(dictate(0.1, recording=True), dictate(0.5, recording=True))
+
     def test_only_blocked_and_working_workspaces_are_animated(self):
         for status, expected in (("blocked", 8), ("working", 8), ("done", 1), ("idle", 1)):
             frames, delays = n1_service.load_herdr_frames(self.workspace_key(status))

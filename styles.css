@@ -3775,6 +3775,29 @@ body.ambient-off .key-screen {
   color: color-mix(in srgb, var(--key-color) 72%, white 28%);
 }
 
+.herdr-mic svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.herdr-mic svg rect {
+  fill: currentColor;
+}
+
+.herdr-mic.herdr-recording {
+  animation: herdr-mic-pulse .9s ease-in-out infinite alternate;
+}
+
+@keyframes herdr-mic-pulse {
+  from { filter: drop-shadow(0 0 0 currentColor); }
+  to { filter: drop-shadow(0 0 4px currentColor); }
+}
+
 .herdr-working .herdr-glyph {
   animation: herdr-spin 1.2s linear infinite;
 }
@@ -3851,6 +3874,7 @@ body.ambient-off .key-screen {
 @media (prefers-reduced-motion: reduce) {
   .key-screen.herdr-blocked::before,
   .herdr-working .herdr-glyph,
+  .herdr-mic.herdr-recording,
   .herdr-pane {
     animation: none;
   }
