@@ -4,7 +4,9 @@ set -Eeuo pipefail
 readonly REPOSITORY="plasticparticle/n1-stream-controller-studio"
 readonly API_ROOT="https://api.github.com/repos/${REPOSITORY}"
 readonly PACKAGE_NAME="n1-stream-controller-studio"
-readonly RULE_TARGET="/etc/udev/rules.d/99-streamctrl-n1.rules"
+# uaccess tags only take effect before systemd's 73-seat-late.rules runs.
+readonly RULE_TARGET="/etc/udev/rules.d/70-streamctrl-n1.rules"
+readonly LEGACY_RULE_TARGET="/etc/udev/rules.d/99-streamctrl-n1.rules"
 
 ACCEPT_ALPHA_RISK="${N1_ACCEPT_ALPHA_RISK:-0}"
 REQUESTED_VERSION="${N1_VERSION:-}"
@@ -307,16 +309,18 @@ fi
 
 cat >"${TEMP_DIR}/udev.rules" <<'EOF'
 # TreasLin / VSDinside N1 legacy USB identity.
-SUBSYSTEM=="usb", ATTR{idVendor}=="5548", ATTR{idProduct}=="1002", MODE="0660", GROUP="plugdev", TAG+="uaccess"
-KERNEL=="hidraw*", ATTRS{idVendor}=="5548", ATTRS{idProduct}=="1002", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="5548", ATTR{idProduct}=="1002", MODE="0660", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{idVendor}=="5548", ATTRS{idProduct}=="1002", MODE="0660", TAG+="uaccess"
 EOF
 
 info "Installing the N1 USB permission rule…"
 run_as_root install -D -m 0644 "${TEMP_DIR}/udev.rules" "${RULE_TARGET}"
+run_as_root rm -f "${LEGACY_RULE_TARGET}"
 
 if command -v udevadm >/dev/null 2>&1; then
   run_as_root udevadm control --reload-rules
   run_as_root udevadm trigger --subsystem-match=usb
+  run_as_root udevadm trigger --subsystem-match=hidraw
 fi
 
 printf '\n'
