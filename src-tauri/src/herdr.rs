@@ -1131,10 +1131,6 @@ impl Runtime {
         })
     }
 
-    pub fn dictating(&self) -> bool {
-        self.dictation.is_some()
-    }
-
     pub fn begin_dictation(&mut self, pane_id: &str) {
         let status = self
             .snapshot
@@ -2142,7 +2138,7 @@ mod tests {
             &[("w1:p1", "w1", "working"), ("w2:p1", "w2", "idle")],
             Some(("w2", "w2:p1")),
         ))));
-        assert!(!runtime.dictating());
+        assert!(runtime.dictation.is_none());
 
         let waiting = self::runtime(snapshot(
             &[("w1:p1", "w1", "blocked")],

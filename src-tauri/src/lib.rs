@@ -341,6 +341,10 @@ fn set_autostart_enabled_native(enabled: bool) -> Result<AutostartPublicState, S
 }
 
 fn repair_enabled_autostart_entry() -> Result<(), String> {
+    // Development runs must not rewrite the login entry of the installed app.
+    if cfg!(debug_assertions) {
+        return Ok(());
+    }
     let (path, expected) = expected_autostart()?;
     let Ok(metadata) = fs::symlink_metadata(&path) else {
         return Ok(());
@@ -358,6 +362,23 @@ fn repair_enabled_autostart_entry() -> Result<(), String> {
         set_autostart_enabled_native(true)?;
     }
     Ok(())
+}
+
+/// Increments `counter` unless it already reached `limit`; reports whether it did.
+fn try_reserve(counter: &AtomicUsize, limit: usize) -> bool {
+    let mut current = counter.load(Ordering::Acquire);
+    while current < limit {
+        match counter.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return true,
+            Err(actual) => current = actual,
+        }
+    }
+    false
 }
 
 fn starts_hidden<I, S>(arguments: I) -> bool
@@ -715,13 +736,7 @@ impl AppCore {
                 if !valid_hardware_input(&message) {
                     return;
                 }
-                if self
-                    .pending_hardware_events
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
-                        (pending < MAX_PENDING_HARDWARE_EVENTS).then_some(pending + 1)
-                    })
-                    .is_err()
-                {
+                if !try_reserve(&self.pending_hardware_events, MAX_PENDING_HARDWARE_EVENTS) {
                     return;
                 }
                 self.emit(message.clone());
@@ -1577,12 +1592,7 @@ impl AppCore {
         let mut last_error = None;
         for resolved in commands {
             let reserved_process = !is_sound
-                && self
-                    .active_action_processes
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
-                        (active < MAX_ACTIVE_ACTION_PROCESSES).then_some(active + 1)
-                    })
-                    .is_ok();
+                && try_reserve(&self.active_action_processes, MAX_ACTIVE_ACTION_PROCESSES);
             if !is_sound && !reserved_process {
                 last_error = Some(std::io::Error::new(
                     std::io::ErrorKind::WouldBlock,
@@ -3980,6 +3990,15 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reserves_slots_only_below_the_limit() {
+        let counter = AtomicUsize::new(0);
+        assert!(try_reserve(&counter, 2));
+        assert!(try_reserve(&counter, 2));
+        assert!(!try_reserve(&counter, 2));
+        assert_eq!(counter.load(Ordering::Acquire), 2);
+    }
 
     #[test]
     fn builds_safe_desktop_autostart_entries() {
