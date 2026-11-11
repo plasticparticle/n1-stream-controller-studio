@@ -178,6 +178,51 @@ class DeviceInitializationTests(unittest.TestCase):
         self.assertEqual(calls, [("geometry",), ("mode", 2), ("init",)])
 
 
+class ResumeDetectionTests(unittest.TestCase):
+    def test_only_a_sleep_longer_than_the_threshold_counts(self):
+        self.assertFalse(n1_service.slept_since(10.0, 10.5))
+        self.assertTrue(n1_service.slept_since(10.0, 300.0))
+
+    def test_monitor_reopens_the_device_after_resume(self):
+        offsets = iter([0.0, 0.0, 600.0])
+        events = []
+        loops = []
+
+        def close_device():
+            events.append("close")
+            n1_service._device = None
+
+        def connect():
+            events.append("connect")
+            n1_service._device = object()
+
+        def wait(_timeout):
+            loops.append(True)
+            if len(loops) == 2:
+                n1_service._device_monitor_stop.set()
+            return False
+
+        original_device = n1_service._device
+        n1_service._device = object()
+        try:
+            with (
+                patch.object(n1_service, "sleep_offset", side_effect=lambda: next(offsets)),
+                patch.object(n1_service, "device_is_present", return_value=True),
+                patch.object(n1_service, "device_transport_is_ready", return_value=True),
+                patch.object(n1_service, "close_device", side_effect=close_device),
+                patch.object(n1_service, "connect", side_effect=connect),
+                patch.object(n1_service, "emit", side_effect=events.append),
+                patch.object(n1_service._device_monitor_stop, "wait", side_effect=wait),
+            ):
+                n1_service.monitor_device()
+        finally:
+            n1_service._device = original_device
+            n1_service._device_monitor_stop.clear()
+
+        self.assertEqual(events[1:], ["close", "connect"])
+        self.assertEqual(events[0]["status"], "reconnecting")
+
+
 class DisplayCommitTests(unittest.TestCase):
     def tearDown(self):
         n1_service._needs_confirmed_refresh = False
@@ -443,6 +488,24 @@ class AgentDisplayTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SetupMarkerTests(unittest.TestCase):
+    def test_keys_that_need_setup_are_dimmed_and_labelled(self):
+        key = {"id": "website", "title": "WEB", "icon": "web", "color": "#ff9f1c"}
+        ready = n1_service.render_key(key)
+        marked = n1_service.render_key({**key, "setup": "Needs a website URL"})
+
+        self.assertLess(sum(marked.getpixel((48, 37))), sum(ready.getpixel((48, 37))))
+        self.assertGreater(marked.getpixel((48, 12))[0], 200)
+
+    def test_desk_icons_render_distinct_symbols(self):
+        icons = ("mic", "volume", "mediaPrevious", "mediaNext", "mediaPlay", "music")
+        rendered = {
+            n1_service.render_key({"id": "music", "title": "X", "icon": icon}).tobytes()
+            for icon in icons
+        }
+        self.assertEqual(len(rendered), len(icons))
 
 
 class HerdrDisplayTests(unittest.TestCase):

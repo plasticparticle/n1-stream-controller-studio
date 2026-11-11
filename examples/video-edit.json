@@ -1,0 +1,21 @@
+{
+  "profile": "editing",
+  "brightness": 86,
+  "keys": [
+    { "id": "hotkey", "name": "Keyboard Shortcut", "title": "CUT", "icon": "keyboard", "color": "#ef476f" },
+    { "id": "hotkey", "name": "Keyboard Shortcut", "title": "RIPPLE", "icon": "keyboard", "color": "#ff9f1c" },
+    { "id": "hotkey", "name": "Keyboard Shortcut", "title": "UNDO", "icon": "keyboard", "color": "#e8ff58" },
+    { "id": "hotkey", "name": "Keyboard Shortcut", "title": "REDO", "icon": "keyboard", "color": "#e8ff58" },
+    { "id": "hotkey", "name": "Keyboard Shortcut", "title": "EXPORT", "icon": "keyboard", "color": "#38d996" },
+    { "id": "hotkey", "name": "Keyboard Shortcut", "title": "MARK IN", "icon": "keyboard", "color": "#37b7ff" },
+    { "id": "hotkey", "name": "Keyboard Shortcut", "title": "MARK OUT", "icon": "keyboard", "color": "#37b7ff" },
+    { "id": "hotkey", "name": "Keyboard Shortcut", "title": "PLAY", "icon": "keyboard", "color": "#38d996" },
+    { "id": "hotkey", "name": "Keyboard Shortcut", "title": "PREV", "icon": "keyboard", "color": "#a78bfa" },
+    { "id": "hotkey", "name": "Keyboard Shortcut", "title": "NEXT", "icon": "keyboard", "color": "#a78bfa" },
+    { "id": "folder", "name": "Open Folder", "title": "FOOTAGE", "icon": "folder", "color": "#37b7ff", "target": "xdg:VIDEOS" },
+    { "id": "music", "name": "Play / Pause", "title": "AUDIO", "icon": "mediaPlay", "color": "#38d996" },
+    { "id": "launch", "name": "Launch App", "title": "EDITOR", "icon": "app", "color": "#ff9f1c" },
+    null,
+    null
+  ]
+}

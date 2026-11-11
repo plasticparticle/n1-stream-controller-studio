@@ -35,6 +35,12 @@ const backend = {
   herdrNextPage() {
     return this.invoke("herdr_next_page");
   },
+  defaultTerminal() {
+    return this.invoke("default_terminal");
+  },
+  actionSetupIssues(keys) {
+    return this.invoke("action_setup_issues", { keys });
+  },
   storeAsset(payload) {
     return this.invoke("store_asset", { payload });
   },
@@ -221,6 +227,26 @@ const deviceIconSymbols = {
     <path d="m48 15 18 28-18 16-18-16 18-28Z"></path>
     <path d="M48 15V59M30 43H66" stroke-width="3"></path>
   `,
+  mic: `
+    <rect x="41" y="17" width="14" height="24" rx="7" stroke-width="4"></rect>
+    <path d="M34 38a14 12 0 0 0 28 0M48 50v6M41 56h14" stroke-width="3"></path>
+  `,
+  volume: `
+    <path d="M30 31h8l10-9v30l-10-9h-8Z" fill="currentColor" stroke="none"></path>
+    <path d="M54 31a8 8 0 0 1 0 12M58 25a15 15 0 0 1 0 24" stroke-width="3"></path>
+  `,
+  mediaPrevious: `
+    <path d="M49 26 33 37l16 11ZM63 26 47 37l16 11Z" fill="currentColor" stroke="none"></path>
+    <path d="M31 26v22" stroke-width="4"></path>
+  `,
+  mediaNext: `
+    <path d="M33 26l16 11-16 11ZM47 26l16 11-16 11Z" fill="currentColor" stroke="none"></path>
+    <path d="M65 26v22" stroke-width="4"></path>
+  `,
+  mediaPlay: `
+    <path d="M33 24l18 13-18 13Z" fill="currentColor" stroke="none"></path>
+    <path d="M57 25v24M65 25v24" stroke-width="4"></path>
+  `,
   record: `
     <circle cx="48" cy="37" r="14" stroke-width="4"></circle>
     <circle cx="48" cy="37" r="5" fill="currentColor" stroke="none"></circle>
@@ -258,12 +284,10 @@ const deviceIconSymbols = {
 };
 
 const deviceIconAliases = {
-  mic: "record",
   monitor: "camera",
   hotkey: "terminal",
   keyboard: "terminal",
-  sound: "music",
-  volume: "music"
+  sound: "music"
 };
 
 const actionCatalog = [
@@ -272,6 +296,7 @@ const actionCatalog = [
   { id: "volume", name: "Mute Speakers", subtitle: "Audio control", description: "Default speakers", icon: "volume", color: "#38d996", category: "stream", group: "Streaming" },
   { id: "record", name: "Start Recording", subtitle: "OBS Studio", description: "Toggle recording", icon: "record", color: "#ef476f", category: "stream", group: "Streaming" },
   { id: "chat", name: "Show Chat", subtitle: "Browser dock", description: "Open stream chat", icon: "message", color: "#a78bfa", category: "stream", group: "Streaming" },
+  { id: "terminal", name: "Open Terminal", subtitle: "Applications", description: "Your terminal ($TERMINAL or the first one installed)", icon: "terminal", color: "#38d996", category: "system", group: "Desktop" },
   { id: "launch", name: "Launch App", subtitle: "Applications", description: "Choose an application", icon: "app", color: "#38d996", category: "system", group: "Desktop" },
   { id: "hotkey", name: "Keyboard Shortcut", subtitle: "System", description: "Ctrl + Shift + M", icon: "keyboard", color: "#e8ff58", category: "system", group: "Desktop" },
   { id: "command", name: "Run Command", subtitle: "Shell", description: "Execute shell command", icon: "terminal", color: "#ff9f1c", category: "system", group: "Desktop" },
@@ -281,7 +306,9 @@ const actionCatalog = [
   { id: "screenshot-window", name: "Active Window", subtitle: "Screenshot", description: "Save active window to Pictures/Screenshots", screenshotClipboard: false, icon: "screenshotWindow", color: "#a78bfa", category: "system", group: "Capture" },
   { id: "website", name: "Open Website", subtitle: "Browser", description: "Open URL", icon: "web", color: "#a78bfa", category: "system", group: "Navigation" },
   { id: "sound", name: "Play Sound", subtitle: "Local audio", description: "Choose a sound file", soundPressBehavior: "stop", soundLoop: false, icon: "sound", color: "#37b7ff", category: "system", group: "Navigation" },
-  { id: "music", name: "Play / Pause", subtitle: "Media", description: "System media control", icon: "music", color: "#38d996", category: "system", group: "Navigation" },
+  { id: "music", name: "Play / Pause", subtitle: "Media", description: "System media control", icon: "mediaPlay", color: "#38d996", category: "system", group: "Navigation" },
+  { id: "media-previous", name: "Previous Track", subtitle: "Media", description: "Skip back in the active player", icon: "mediaPrevious", color: "#38d996", category: "system", group: "Navigation" },
+  { id: "media-next", name: "Next Track", subtitle: "Media", description: "Skip ahead in the active player", icon: "mediaNext", color: "#38d996", category: "system", group: "Navigation" },
   { id: "lock", name: "Lock Screen", subtitle: "Linux", description: "Lock this session", icon: "lock", color: "#e8ff58", category: "system", group: "Navigation" }
 ];
 
@@ -507,21 +534,24 @@ function agentProfileLayout(agent) {
   return [...slots, ...workflows];
 }
 
+// Video Edit shipped as a default until version 4; its shortcuts depend on the editor
+// in use, so it now lives in examples/video-edit.json. Kept to recognize untouched copies.
+const retiredVideoEditLayout = [
+  ["hotkey", "CUT", "#ef476f"], ["hotkey", "RIPPLE", "#ff9f1c"], ["hotkey", "UNDO", "#e8ff58"], ["hotkey", "REDO", "#e8ff58"], ["record", "EXPORT", "#38d996"],
+  ["hotkey", "MARK IN", "#37b7ff"], ["hotkey", "MARK OUT", "#37b7ff"], ["hotkey", "PLAY", "#38d996"], ["hotkey", "PREV", "#a78bfa"], ["hotkey", "NEXT", "#a78bfa"],
+  ["folder", "FOOTAGE", "#37b7ff"], ["music", "AUDIO", "#38d996"], ["launch", "EDITOR", "#ff9f1c"], null, null
+];
+
 const layouts = {
+  desktop: [
+    ["terminal", "TERMINAL", "#38d996"], ["folder", "HOME", "#37b7ff", { target: "~" }], ["folder", "DOWNLOADS", "#a78bfa", { target: "xdg:DOWNLOAD" }], ["website", "WEB", "#ff9f1c", { target: "https://duckduckgo.com" }], ["lock", "LOCK", "#e8ff58"],
+    ["media-previous", "PREV", "#38d996"], ["music", "PLAY", "#38d996"], ["media-next", "NEXT", "#38d996"], ["mic", "MIC", "#ef476f"], ["volume", "MUTE", "#37b7ff"],
+    ["screenshot-area", "AREA", "#37b7ff"], ["screenshot-window", "WINDOW", "#a78bfa"], ["screenshot-full", "SCREEN", "#e8ff58"], ["folder", "SHOTS", "#e8ff58", { target: "xdg:PICTURES/Screenshots" }], null
+  ],
   streaming: [
     ["scene", "STARTING", "#37b7ff"], ["scene", "MAIN CAM", "#37b7ff"], ["scene", "GAME", "#a78bfa"], ["scene", "BRB", "#ff9f1c"], ["record", "RECORD", "#ef476f"],
     ["mic", "MIC", "#ef476f"], ["volume", "SOUND", "#38d996"], ["chat", "CHAT", "#a78bfa"], ["music", "MUSIC", "#38d996"], ["website", "DASHBOARD", "#37b7ff"],
     ["launch", "OBS", "#38d996"], ["launch", "BROWSER", "#ff9f1c"], ["hotkey", "CLIP", "#e8ff58"], ["folder", "ASSETS", "#37b7ff"], null
-  ],
-  editing: [
-    ["hotkey", "CUT", "#ef476f"], ["hotkey", "RIPPLE", "#ff9f1c"], ["hotkey", "UNDO", "#e8ff58"], ["hotkey", "REDO", "#e8ff58"], ["record", "EXPORT", "#38d996"],
-    ["hotkey", "MARK IN", "#37b7ff"], ["hotkey", "MARK OUT", "#37b7ff"], ["hotkey", "PLAY", "#38d996"], ["hotkey", "PREV", "#a78bfa"], ["hotkey", "NEXT", "#a78bfa"],
-    ["folder", "FOOTAGE", "#37b7ff"], ["music", "AUDIO", "#38d996"], ["launch", "EDITOR", "#ff9f1c"], null, null
-  ],
-  desktop: [
-    ["launch", "TERMINAL", "#38d996"], ["launch", "FILES", "#37b7ff"], ["launch", "MAIL", "#ef476f"], ["launch", "BROWSER", "#ff9f1c"], ["lock", "LOCK", "#e8ff58"],
-    ["website", "CALENDAR", "#a78bfa"], ["music", "MUSIC", "#38d996"], ["volume", "VOLUME", "#37b7ff"], ["screenshot-full", "SCREENSHOT", "#e8ff58"], ["command", "UPDATES", "#ff9f1c"],
-    null, null, null, null, null
   ],
   "codex-cli": agentProfileLayout("codex"),
   "claude-cli": agentProfileLayout("claude"),
@@ -531,7 +561,6 @@ const layouts = {
 
 const profileNames = {
   streaming: "Live Stream",
-  editing: "Video Edit",
   desktop: "Daily Desk",
   "codex-cli": "Codex CLI",
   "claude-cli": "Claude CLI",
@@ -540,11 +569,11 @@ const profileNames = {
 };
 const singlePageProfileIds = [...agentProfileIds, herdrProfileId];
 
-const defaultProfilesVersion = 3;
+const defaultProfilesVersion = 4;
 const maxProfiles = 24;
 const maxProfileNameLength = 40;
 const maxAutoSyncRetries = 6;
-let currentProfile = "streaming";
+let currentProfile = "desktop";
 let profileOrder = [];
 let selectedIndex = 0;
 let catalogPreviewAction = null;
@@ -677,6 +706,21 @@ function fallbackProfileName(profileId) {
     .slice(0, maxProfileNameLength);
 }
 
+function isUntouchedRetiredVideoEdit(pages) {
+  if (!Array.isArray(pages) || !pages.length) return false;
+  const factory = retiredVideoEditLayout.map(createKeyData);
+  const fields = ["id", "title", "color", "target", "command"];
+  const sameKey = (saved, original) => (
+    saved === null || original === null
+      ? saved === original
+      : fields.every((field) => (saved?.[field] ?? null) === (original[field] ?? null))
+        && !saved.visuals
+        && !saved.sound
+  );
+  return pages[0].every((key, index) => sameKey(key, factory[index]))
+    && pages.slice(1).every((page) => page.every((key) => key === null));
+}
+
 function savedProfileName(names, profileId) {
   const value = names && typeof names[profileId] === "string"
     ? names[profileId].trim()
@@ -793,6 +837,16 @@ if (profileOrder.length && restoredDefaultProfilesVersion < defaultProfilesVersi
     && herdrOptional.herdrAction === "interrupt"
   ) {
     pageLayouts[herdrProfileId][0][14] = createKeyData(herdrKeyTuple("dictate", false));
+  }
+  // Version 4 retired Video Edit; drop it only while it is still the untouched factory copy.
+  if (restoredDefaultProfilesVersion < 4 && isUntouchedRetiredVideoEdit(pageLayouts.editing)) {
+    delete pageLayouts.editing;
+    delete currentPageByProfile.editing;
+    delete profileNames.editing;
+    disabledProfiles.delete("editing");
+    profileOrder.splice(profileOrder.indexOf("editing"), 1);
+    if (currentProfile === "editing") currentProfile = profileOrder[0];
+    if (profileBeforeHerdr === "editing") profileBeforeHerdr = null;
   }
 }
 
@@ -1589,9 +1643,53 @@ async function flushAgentVisualSync() {
   }
 }
 
+let activeSetupIssues = [];
+let activeSetupIssuesJson = "[]";
+let setupCheckRevision = 0;
+
+// Names the terminal AI sessions open in, e.g. "GHOSTTY" behind xdg-terminal-exec.
+function showDefaultTerminal(terminal) {
+  const hint = document.querySelector("#agentTerminalHint");
+  if (!terminal?.found) {
+    hint.textContent = "NO TERMINAL FOUND";
+    hint.dataset.state = "missing";
+    hint.title = "Set $TERMINAL or install a terminal such as Ghostty, kitty, Alacritty, or foot";
+    return;
+  }
+  const entryName = String(terminal.entry || "").split(".").pop();
+  const name = entryName || String(terminal.program || "");
+  hint.textContent = name.toUpperCase().slice(0, 24);
+  hint.dataset.state = "found";
+  hint.title = terminal.entry
+    ? `${terminal.program} opens ${terminal.entry}`
+    : `Sessions open in ${terminal.program}`;
+}
+
+function setupIssueFor(key, index) {
+  return Number.isInteger(index) && activeLayout()[index] === key ? activeSetupIssues[index] || null : null;
+}
+
+// Asks the core which keys of the visible page cannot work yet, then re-renders on change.
+async function refreshSetupIssues() {
+  const revision = ++setupCheckRevision;
+  let issues = [];
+  try {
+    issues = await backend.actionSetupIssues(activeLayout().map((key) => key || {}));
+  } catch {
+    issues = [];
+  }
+  if (revision !== setupCheckRevision) return;
+  const issuesJson = JSON.stringify(issues);
+  if (issuesJson === activeSetupIssuesJson) return;
+  activeSetupIssues = Array.isArray(issues) ? issues : [];
+  activeSetupIssuesJson = issuesJson;
+  renderKeys();
+}
+
 function keyScreenMarkup(key, secondary = false, playback = null, index = null) {
   if (!key) return '<div class="key-screen empty"><span class="empty-plus">+</span></div>';
   if (key.id === "herdr") return herdrKeyMarkup(key, herdrViewForKey(key, index));
+  const setupIssue = setupIssueFor(key, index);
   const visualKey = agentVisualKey(key);
   const isSound = key.id === "sound" && Boolean(key.sound);
   const visual = isSound ? null : selectedVisual(key, secondary);
@@ -1608,8 +1706,12 @@ function keyScreenMarkup(key, secondary = false, playback = null, index = null) 
     playback ? "sound-playing" : "",
     isAgentMonitored ? "agent-monitored" : "",
     isAgentMonitored ? (isAgentActive ? "agent-active" : "agent-idle") : "",
-    isAgentSelected ? "agent-selected" : ""
+    isAgentSelected ? "agent-selected" : "",
+    setupIssue ? "needs-setup" : ""
   ].filter(Boolean).join(" ");
+  const setupMarkup = setupIssue
+    ? `<span class="setup-badge" title="${escapeHtml(setupIssue)}">SET UP</span>`
+    : "";
   const soundMarkup = isSound ? soundWaveformMarkup(key.sound, playback) : "";
   const modelMarkup = agentModelIndicatorMarkup(key);
   const agentMarkup = isAgentMonitored
@@ -1619,9 +1721,9 @@ function keyScreenMarkup(key, secondary = false, playback = null, index = null) 
     ? `<span class="agent-usage-summary">${agentUsageSummaryMarkup()}</span>`
     : "";
   if (previewUrl) {
-    return `<div class="${screenClass}" style="--key-color:${color}"><img src="${escapeHtml(previewUrl)}" alt="" draggable="false">${soundMarkup}${modelMarkup}${agentMarkup}${usageMarkup}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
+    return `<div class="${screenClass}" style="--key-color:${color}"><img src="${escapeHtml(previewUrl)}" alt="" draggable="false">${soundMarkup}${modelMarkup}${agentMarkup}${usageMarkup}${setupMarkup}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
   }
-  return `<div class="${screenClass}" style="--key-color:${color}">${isSound ? "" : deviceIconMarkup(key.icon)}${soundMarkup}${modelMarkup}${agentMarkup}${usageMarkup}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
+  return `<div class="${screenClass}" style="--key-color:${color}">${isSound ? "" : deviceIconMarkup(key.icon)}${soundMarkup}${modelMarkup}${agentMarkup}${usageMarkup}${setupMarkup}<span class="key-label">${escapeHtml(key.title)}</span></div>`;
 }
 
 function escapeHtml(value) {
@@ -1835,7 +1937,7 @@ function renderKeys() {
     button.setAttribute(
       "aria-label",
       key
-        ? `Key ${index + 1}: ${key.title}${playback ? ", sound playing" : ""}${key.agentMonitor ? `, agent ${agentKeyIsActive(key) ? "running" : "idle"}` : ""}`
+        ? `Key ${index + 1}: ${key.title}${playback ? ", sound playing" : ""}${key.agentMonitor ? `, agent ${agentKeyIsActive(key) ? "running" : "idle"}` : ""}${activeSetupIssues[index] ? `, needs setup: ${activeSetupIssues[index]}` : ""}`
         : `Key ${index + 1}: empty`
     );
     button.innerHTML = keyScreenMarkup(key, getRuntimeVisualState(index), playback, index);
@@ -1854,6 +1956,7 @@ function renderKeys() {
     keyGrid.appendChild(button);
   });
   updateInspector();
+  void refreshSetupIssues();
 }
 
 function renderActions() {
@@ -1972,18 +2075,19 @@ function updateInspector() {
   document.querySelector("#previewActionName").textContent = name;
   document.querySelector("#previewActionType").textContent = subtitle;
   document.querySelector("#assignedActionName").textContent = name;
+  const setupIssue = assignedKey ? setupIssueFor(assignedKey, selectedIndex) : null;
   document.querySelector("#assignedActionDescription").textContent = managedByHerdr
     ? `${description}. Managed by herdr: change it in ~/.config/herdr/plugins/config/n1-studio/deck.json.`
-    : description;
+    : setupIssue ? `Set up: ${setupIssue}` : description;
   document.querySelector("#assignedActionIcon").innerHTML = iconMarkup(key?.icon || "plus");
   document.querySelector("#assignedActionIcon").style.setProperty("--icon-color", safeColor(key?.color, "#667176"));
   const assignedActionState = document.querySelector("#assignedActionState");
   assignedActionState.textContent = isCatalogPreview
     ? "PREVIEW"
-    : managedByHerdr ? "HERDR" : assignedKey ? "ACTIVE" : "EMPTY";
+    : managedByHerdr ? "HERDR" : setupIssue ? "SET UP" : assignedKey ? "ACTIVE" : "EMPTY";
   assignedActionState.dataset.state = isCatalogPreview
     ? "preview"
-    : assignedKey ? "active" : "empty";
+    : setupIssue ? "setup" : assignedKey ? "active" : "empty";
   document.querySelector("#clearKeyButton").disabled = !assignedKey || managedByHerdr;
   document.querySelector("#duplicateButton").disabled = !assignedKey || managedByHerdr;
   const effectiveKey = key?.id === "ai-agent" ? materializeAgentAction(key, currentProfile) : key;
@@ -2107,7 +2211,7 @@ function updateInspector() {
   const targetSettings = {
     scene: ["Target scene", "", false],
     website: ["Website URL", "https://example.com", true],
-    folder: ["Folder path", "/home/user/Documents", true],
+    folder: ["Folder path", "~/Documents, xdg:PICTURES or /absolute/path", true],
     launch: ["Application command", "obs", true],
     command: ["Shell command", "notify-send 'Hello'", true],
     hotkey: ["Shortcut command", "ydotool key 29:1 46:1 46:0 29:0", true]
@@ -3907,6 +4011,11 @@ async function initializeNativeState() {
     handleHerdrState(await backend.herdrStatus());
   } catch (error) {
     console.warn("herdr status unavailable", error);
+  }
+  try {
+    showDefaultTerminal(await backend.defaultTerminal());
+  } catch (error) {
+    console.warn("Default terminal unavailable", error);
   }
   revealStudio();
   renderStartupConnection("connecting", "Syncing the active profile…", "SYNC");

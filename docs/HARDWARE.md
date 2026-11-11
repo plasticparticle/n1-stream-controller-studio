@@ -94,6 +94,11 @@ old HID handle; reconnecting opens a fresh one automatically. A failed transfer 
 one bounded reconnect-and-retry cycle while USB settles. If the bundled sidecar exits
 unexpectedly, the Rust core starts it again.
 
+Waking from suspend or hibernation is sneakier: the kernel resets the N1 in place, so
+it keeps its USB address and its HID handle stays writable while the device shows its
+firmware default buttons. The driver notices the sleep itself (`CLOCK_BOOTTIME` runs
+ahead of `CLOCK_MONOTONIC` by the time spent asleep) and reopens the device.
+
 Each transition back to `ready` schedules another active-configuration restore. That
 is why reconnecting should bring back the active page instead of presenting fifteen
 small black rectangles of mystery.

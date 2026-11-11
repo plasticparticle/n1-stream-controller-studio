@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import fcntl
+import functools
 import io
 import json
 import math
@@ -34,6 +35,8 @@ INSTANCE_TERMINATE_TIMEOUT = 2.0
 INSTANCE_KILL_TIMEOUT = 1.0
 FIRST_SYNC_CONFIRM_DELAY = 0.12
 FIRST_SYNC_REPLAY_DELAY = 0.5
+# Suspend shorter than this is indistinguishable from scheduling jitter.
+SLEEP_DETECTION_THRESHOLD = 2.0
 
 _stdout_lock = threading.Lock()
 _device_lock = threading.RLock()
@@ -347,7 +350,28 @@ def draw_symbol(draw: ImageDraw.ImageDraw, icon: str, color: tuple[int, int, int
         draw.polygon(((48, 15), (66, 43), (48, 59), (30, 43)), outline=bright)
         draw.line((48, 15, 48, 59), fill=bright, width=3)
         draw.line((30, 43, 66, 43), fill=bright, width=3)
-    elif icon in {"record", "mic"}:
+    elif icon == "mic":
+        draw.rounded_rectangle((41, 17, 55, 41), radius=7, outline=bright, width=4)
+        draw.arc((34, 26, 62, 50), 0, 180, fill=bright, width=3)
+        draw.line((48, 50, 48, 56), fill=bright, width=3)
+        draw.line((41, 56, 55, 56), fill=bright, width=3)
+    elif icon == "volume":
+        draw.polygon(((30, 31), (38, 31), (48, 22), (48, 52), (38, 43), (30, 43)), fill=bright)
+        draw.arc((44, 27, 60, 47), -50, 50, fill=bright, width=3)
+        draw.arc((46, 21, 68, 53), -50, 50, fill=bright, width=3)
+    elif icon in {"mediaPrevious", "mediaNext"}:
+        direction = 1 if icon == "mediaNext" else -1
+        for offset in (-7, 7):
+            tip = 48 + offset + 8 * direction
+            back = 48 + offset - 8 * direction
+            draw.polygon(((back, 26), (tip, 37), (back, 48)), fill=bright)
+        edge = 48 + 17 * direction
+        draw.line((edge, 26, edge, 48), fill=bright, width=4)
+    elif icon == "mediaPlay":
+        draw.polygon(((33, 24), (51, 37), (33, 50)), fill=bright)
+        draw.rounded_rectangle((55, 25, 59, 49), radius=1, fill=bright)
+        draw.rounded_rectangle((63, 25, 67, 49), radius=1, fill=bright)
+    elif icon in {"record"}:
         draw.ellipse((34, 23, 62, 51), outline=bright, width=4)
         draw.ellipse((43, 32, 53, 42), fill=bright)
     elif icon in {"camera", "monitor"}:
@@ -435,17 +459,7 @@ def render_sound_key(
 ) -> Image.Image:
     base = rgb(key.get("color", "#37b7ff"))
     progress = max(0.0, min(1.0, float(progress)))
-    image = Image.new("RGB", KEY_SIZE)
-    pixels = image.load()
-    for y in range(KEY_SIZE[1]):
-        vertical = y / (KEY_SIZE[1] - 1)
-        factor = (0.42 - vertical * 0.16) if playing else (0.15 - vertical * 0.06)
-        for x in range(KEY_SIZE[0]):
-            glow = max(0.0, 1.0 - abs(x - 48) / 58) * (0.12 if playing else 0.025)
-            pixels[x, y] = tuple(
-                max(3, min(255, int(channel * (factor + glow)))) for channel in base
-            )
-
+    image = render_key_body(base, filled=playing, glow_center=(48, 43))
     draw = ImageDraw.Draw(image)
     bright = tuple(min(255, int(channel * 0.7) + 92) for channel in base)
     dim = tuple(max(46, int(channel * 0.38)) for channel in base)
@@ -469,16 +483,7 @@ def render_sound_key(
         status = "LOOP" if key.get("soundLoop") is True else "PLAY"
         draw.text((17, 6), status, font=status_font, fill=(238, 246, 229))
 
-    draw.rounded_rectangle(
-        (2, 2, 93, 93),
-        radius=10,
-        outline=bright if playing else (48, 53, 57),
-        width=2,
-    )
-    title, font = fit_text(draw, str(key.get("title", "")), 82)
-    text_box = draw.textbbox((0, 0), title, font=font)
-    text_width = text_box[2] - text_box[0]
-    draw.text(((96 - text_width) / 2, 74), title, font=font, fill=(247, 250, 242))
+    draw_key_title(draw, str(key.get("title", "")), 73)
     return image
 
 
@@ -649,6 +654,60 @@ def draw_microphone(
     return Image.composite(Image.new("RGB", KEY_SIZE, shade), result, grille)
 
 
+def render_key_body(
+    accent: tuple[int, int, int],
+    filled: bool = False,
+    pulse: float = 0.0,
+    glow: bool = True,
+    glow_center: tuple[int, int] = (48, 36),
+) -> Image.Image:
+    """The shared key face: a gradient in the key color, a soft glow behind the symbol,
+    a faint shine, rounded corners, and a rim. Filled keys show an active state."""
+    if filled:
+        top, bottom = 0.78 + 0.12 * pulse, 0.34
+    else:
+        top, bottom = 0.30 + 0.16 * pulse, 0.05
+    image = Image.new("RGB", KEY_SIZE, (0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    for row in range(KEY_SIZE[1]):
+        mix = row / (KEY_SIZE[1] - 1)
+        draw.line((0, row, KEY_SIZE[0], row), fill=scale_color(accent, top + (bottom - top) * mix))
+
+    if glow:
+        x, y = glow_center
+        light = Image.new("L", KEY_SIZE, 0)
+        ImageDraw.Draw(light).ellipse((x - 26, y - 26, x + 26, y + 26), fill=150 if filled else 120)
+        light = light.filter(ImageFilter.GaussianBlur(9))
+        image = Image.composite(
+            Image.new("RGB", KEY_SIZE, lift_color(accent, 40) if filled else accent),
+            image,
+            light,
+        )
+    shine = Image.new("L", KEY_SIZE, 0)
+    ImageDraw.Draw(shine).rounded_rectangle((8, 5, 87, 30), radius=12, fill=34 if filled else 22)
+    shine = shine.filter(ImageFilter.GaussianBlur(5))
+    image = Image.composite(Image.new("RGB", KEY_SIZE, (255, 255, 255)), image, shine)
+    body = Image.new("L", KEY_SIZE, 0)
+    ImageDraw.Draw(body).rounded_rectangle((1, 1, 94, 94), radius=12, fill=255)
+    image = Image.composite(image, Image.new("RGB", KEY_SIZE, (0, 0, 0)), body)
+    draw = ImageDraw.Draw(image)
+    if filled:
+        draw.rounded_rectangle((1, 1, 94, 94), radius=12, outline=(246, 248, 243), width=3)
+    else:
+        draw.rounded_rectangle((1, 1, 94, 94), radius=12, outline=scale_color(accent, 0.62), width=2)
+    return image
+
+
+def draw_key_title(
+    draw: ImageDraw.ImageDraw, title: str, top: int, color: tuple[int, int, int] = (246, 248, 243)
+) -> None:
+    text, font = fit_text(draw, title, 84)
+    box = draw.textbbox((0, 0), text, font=font)
+    x = (96 - (box[2] - box[0])) / 2
+    draw.text((x + 1, top + 1), text, font=font, fill=(0, 0, 0))
+    draw.text((x, top), text, font=font, fill=color)
+
+
 def herdr_pane_statuses(state: dict[str, Any]) -> list[str]:
     panes = state.get("panes")
     if not isinstance(panes, list):
@@ -709,39 +768,8 @@ def render_herdr_key(key: dict[str, Any], progress: float = 0.0) -> Image.Image:
     focused = state.get("focused") is True
     pulse = 0.5 + 0.5 * math.sin(progress * math.tau) if status == "blocked" else 0.0
 
-    # Vertical gradient; the focused key is filled with its status color.
-    if focused:
-        top, bottom = 0.78 + 0.12 * pulse, 0.34
-    else:
-        top, bottom = 0.30 + 0.16 * pulse, 0.05
-    image = Image.new("RGB", KEY_SIZE, (0, 0, 0))
+    image = render_key_body(accent, filled=focused, pulse=pulse, glow=not inactive)
     draw = ImageDraw.Draw(image)
-    for row in range(KEY_SIZE[1]):
-        mix = row / (KEY_SIZE[1] - 1)
-        draw.line((0, row, KEY_SIZE[0], row), fill=scale_color(accent, top + (bottom - top) * mix))
-
-    # Soft glow behind the glyph and a faint shine across the top.
-    if not inactive:
-        glow = Image.new("L", KEY_SIZE, 0)
-        ImageDraw.Draw(glow).ellipse((22, 10, 74, 62), fill=150 if focused else 120)
-        glow = glow.filter(ImageFilter.GaussianBlur(9))
-        image = Image.composite(
-            Image.new("RGB", KEY_SIZE, lift_color(accent, 40) if focused else accent),
-            image,
-            glow,
-        )
-    shine = Image.new("L", KEY_SIZE, 0)
-    ImageDraw.Draw(shine).rounded_rectangle((8, 5, 87, 30), radius=12, fill=34 if focused else 22)
-    shine = shine.filter(ImageFilter.GaussianBlur(5))
-    image = Image.composite(Image.new("RGB", KEY_SIZE, (255, 255, 255)), image, shine)
-    body = Image.new("L", KEY_SIZE, 0)
-    ImageDraw.Draw(body).rounded_rectangle((1, 1, 94, 94), radius=12, fill=255)
-    image = Image.composite(image, Image.new("RGB", KEY_SIZE, (0, 0, 0)), body)
-    draw = ImageDraw.Draw(image)
-    if focused:
-        draw.rounded_rectangle((1, 1, 94, 94), radius=12, outline=(246, 248, 243), width=3)
-    else:
-        draw.rounded_rectangle((1, 1, 94, 94), radius=12, outline=scale_color(accent, 0.62), width=2)
 
     small = find_font(10, bold=True)
     number = str(state.get("number") or "")[:3]
@@ -803,33 +831,111 @@ def load_herdr_frames(key: dict[str, Any]) -> tuple[list[bytes], list[int]]:
     return frames, [HERDR_ANIMATION_DELAY] * frame_count
 
 
+SYMBOL_SCALE = 4
+
+
+class ScaledMaskDraw:
+    """Replays ImageDraw calls onto a larger single-channel mask, so symbols drawn
+    for the 96-pixel key come out with smooth edges after scaling down."""
+
+    def __init__(self, mask: Image.Image, scale: int) -> None:
+        self._draw = ImageDraw.Draw(mask)
+        self._scale = scale
+
+    def _point(self, value: float) -> float:
+        return (value + 0.5) * self._scale
+
+    def _points(self, xy: Any) -> list[Any]:
+        if xy and isinstance(xy[0], (tuple, list)):
+            return [tuple(self._point(value) for value in point) for point in xy]
+        return [self._point(value) for value in xy]
+
+    def _options(self, options: dict[str, Any], default_width: bool = False) -> dict[str, Any]:
+        scaled = dict(options)
+        for name in ("fill", "outline"):
+            if scaled.get(name) is not None:
+                scaled[name] = 255
+        if "width" in scaled:
+            scaled["width"] = max(1, round(scaled["width"] * self._scale))
+        elif default_width and scaled.get("outline") is not None:
+            scaled["width"] = self._scale
+        if "radius" in scaled:
+            scaled["radius"] = scaled["radius"] * self._scale
+        return scaled
+
+    def line(self, xy: Any, **options: Any) -> None:
+        self._draw.line(self._points(xy), **self._options(options))
+
+    def ellipse(self, xy: Any, **options: Any) -> None:
+        self._draw.ellipse(self._points(xy), **self._options(options, default_width=True))
+
+    def rectangle(self, xy: Any, **options: Any) -> None:
+        self._draw.rectangle(self._points(xy), **self._options(options, default_width=True))
+
+    def rounded_rectangle(self, xy: Any, **options: Any) -> None:
+        self._draw.rounded_rectangle(self._points(xy), **self._options(options, default_width=True))
+
+    def polygon(self, xy: Any, **options: Any) -> None:
+        self._draw.polygon(self._points(xy), **self._options(options, default_width=True))
+
+    def arc(self, xy: Any, start: float, end: float, **options: Any) -> None:
+        self._draw.arc(self._points(xy), start, end, **self._options(options))
+
+
+@functools.lru_cache(maxsize=64)
+def symbol_mask(icon: str) -> Image.Image:
+    size = (KEY_SIZE[0] * SYMBOL_SCALE, KEY_SIZE[1] * SYMBOL_SCALE)
+    mask = Image.new("L", size, 0)
+    draw_symbol(ScaledMaskDraw(mask, SYMBOL_SCALE), icon, (255, 255, 255))  # type: ignore[arg-type]
+    return mask.resize(KEY_SIZE, Image.Resampling.LANCZOS)
+
+
+def paint_symbol(
+    image: Image.Image, icon: str, color: tuple[int, int, int], glow: tuple[int, int, int]
+) -> Image.Image:
+    """Draws a smooth symbol with a soft neon halo in the key color."""
+    mask = symbol_mask(icon)
+    halo = mask.filter(ImageFilter.GaussianBlur(3)).point(lambda value: int(value * 0.85))
+    image = Image.composite(Image.new("RGB", KEY_SIZE, glow), image, halo)
+    return Image.composite(Image.new("RGB", KEY_SIZE, color), image, mask)
+
+
 def render_key(key: dict[str, Any]) -> Image.Image:
     if key.get("id") == "herdr":
         return render_herdr_key(key)
     if key.get("id") == "sound" and isinstance(key.get("sound"), dict):
         return render_sound_key(key)
     base = rgb(key.get("color", "#37b7ff"))
-    image = Image.new("RGB", KEY_SIZE, tuple(max(3, int(channel * 0.08)) for channel in base))
+    # A running agent session lights up like the focused herdr workspace.
+    active = bool(key.get("agentMonitor")) and key.get("agentActive") is True
+    image = render_key_body(base, filled=active, glow_center=(48, 37))
+    image = paint_symbol(
+        image,
+        str(key.get("icon", "app")),
+        (250, 251, 247) if active else lift_color(base, 80),
+        lift_color(base, 40),
+    )
     draw = ImageDraw.Draw(image)
-
-    for radius in range(48, 5, -1):
-        factor = (48 - radius) / 48
-        shade = tuple(
-            max(0, min(255, int(channel * (0.12 + factor * 0.34)))) for channel in base
-        )
-        draw.ellipse((48 - radius, 31 - radius, 48 + radius, 31 + radius), fill=shade)
-
-    draw.rounded_rectangle((2, 2, 93, 93), radius=10, outline=(48, 53, 57), width=2)
-    draw_symbol(draw, str(key.get("icon", "app")), base)
     draw_agent_model_indicator(draw, key)
     if key.get("agentMonitor"):
-        active = key.get("agentActive") is True
-        dot = tuple(min(255, channel + 85) for channel in base) if active else (57, 66, 70)
-        draw.ellipse((77, 8, 87, 18), fill=dot, outline=(205, 214, 208), width=1)
-    title, font = fit_text(draw, str(key.get("title", "")), 82)
-    text_box = draw.textbbox((0, 0), title, font=font)
-    text_width = text_box[2] - text_box[0]
-    draw.text(((96 - text_width) / 2, 69), title, font=font, fill=(242, 244, 239))
+        dot = (250, 251, 247) if active else (57, 66, 70)
+        draw.ellipse((77, 8, 87, 18), fill=dot, outline=(8, 10, 12), width=1)
+    draw_key_title(draw, str(key.get("title", "")), 65)
+    if key.get("setup"):
+        image = mark_setup_needed(image)
+    return image
+
+
+def mark_setup_needed(image: Image.Image) -> Image.Image:
+    """Dims a key that cannot work yet and labels it so it does not look ready."""
+    image = Image.blend(Image.new("RGB", KEY_SIZE, (0, 0, 0)), image, 0.4)
+    draw = ImageDraw.Draw(image)
+    font = find_font(9, bold=True)
+    box = draw.textbbox((0, 0), "SET UP", font=font)
+    width = box[2] - box[0]
+    left = (96 - width) / 2 - 6
+    draw.rounded_rectangle((left, 5, left + width + 12, 19), radius=7, fill=(255, 196, 61))
+    draw.text((left + 6, 6), "SET UP", font=font, fill=(16, 14, 8))
     return image
 
 
@@ -1387,11 +1493,40 @@ def commit_layout_refresh(device: StreamDockN1) -> None:
     _needs_confirmed_refresh = False
 
 
+def sleep_offset() -> float:
+    """Return the time the system has spent suspended or hibernated so far.
+
+    CLOCK_BOOTTIME keeps counting through sleep while CLOCK_MONOTONIC stops, so the
+    difference grows by the length of every sleep.
+    """
+    return time.clock_gettime(time.CLOCK_BOOTTIME) - time.monotonic()
+
+
+def slept_since(previous_offset: float, current_offset: float) -> bool:
+    return current_offset - previous_offset > SLEEP_DETECTION_THRESHOLD
+
+
 def monitor_device() -> None:
     last_present: bool | None = None
     last_error = ""
+    last_sleep_offset = sleep_offset()
     while _running and not _device_monitor_stop.is_set():
         try:
+            current_sleep_offset = sleep_offset()
+            if slept_since(last_sleep_offset, current_sleep_offset) and _device is not None:
+                # Resume resets the N1 over USB without re-enumerating it: the HID
+                # handle stays writable while the device shows its firmware default
+                # screen. Reopen it so the native core restores the active deck.
+                emit(
+                    {
+                        "event": "status",
+                        "status": "reconnecting",
+                        "error": "System resumed from sleep; reinitializing N1",
+                    }
+                )
+                close_device()
+                last_error = ""
+            last_sleep_offset = current_sleep_offset
             present = device_is_present()
             if not present:
                 if last_present is not False or _device is not None:

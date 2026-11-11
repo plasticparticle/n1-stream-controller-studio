@@ -69,7 +69,9 @@ open.
 Workspace keys act when released, so a short press still jumps to the workspace.
 
 Every action that changes focus also raises the terminal running the herdr client,
-through `hyprctl` on Hyprland or `wmctrl` on X11 desktops.
+through `hyprctl` on Hyprland (classic and Lua configurations) or `wmctrl` on X11
+desktops. The terminal comes to the front even when it sits on another workspace or
+monitor.
 
 ### Next
 

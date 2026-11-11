@@ -845,10 +845,16 @@ impl AppCore {
             .as_array()
             .expect("keys validated above")
             .clone();
-        let materialized = keys
+        let mut materialized = keys
             .iter()
             .map(|key| self.materialize_key(key))
             .collect::<Result<Vec<_>, _>>()?;
+        // Keys that cannot work yet are marked on the device instead of failing silently.
+        for (key, original) in materialized.iter_mut().zip(&keys) {
+            if let Some(issue) = action_setup_issue(original, self.allow_shell_actions) {
+                key["setup"] = Value::String(issue);
+            }
+        }
         driver_config["keys"] = Value::Array(materialized);
 
         // herdr keys show live session state, so the transfer carries the current
@@ -2566,16 +2572,63 @@ fn resolve_agent_commands(
     launch.push(executable.to_string_lossy().into_owned());
     launch.extend(agent_cli_args(agent, workflow, custom_prompt));
 
+    let terminal = terminal_program();
+    trusted_program_path(&terminal)
+        .map_err(|_| "No terminal app found; set $TERMINAL or install one".to_string())?;
+    Ok(vec![terminal_launch(
+        &terminal,
+        agent_terminal_title(action),
+        launch,
+    )])
+}
+
+/// Runs `command` in `terminal`, titled `title`, using that terminal's own options.
+fn terminal_launch(terminal: &str, title: Option<String>, command: Vec<String>) -> ResolvedAction {
     let mut args = Vec::new();
-    if let Some(title) = agent_terminal_title(action) {
-        args.extend(["-T".into(), title]);
+    match terminal {
+        "xdg-terminal-exec" => {
+            args.extend(title.map(|title| format!("--title={title}")));
+            args.push("--".into());
+        }
+        "ghostty" => {
+            args.extend(title.map(|title| format!("--title={title}")));
+            args.push("-e".into());
+        }
+        "kitty" | "foot" => {
+            if let Some(title) = title {
+                args.extend(["--title".into(), title]);
+            }
+        }
+        "wezterm" => args.extend(["start".into(), "--".into()]),
+        "gnome-terminal" | "kgx" => {
+            args.extend(title.map(|title| format!("--title={title}")));
+            args.push("--".into());
+        }
+        "konsole" => {
+            if let Some(title) = title {
+                args.extend(["-p".into(), format!("tabtitle={title}")]);
+            }
+            args.push("-e".into());
+        }
+        "xfce4-terminal" => {
+            if let Some(title) = title {
+                args.extend(["-T".into(), title]);
+            }
+            args.push("-x".into());
+        }
+        // alacritty, xterm, x-terminal-emulator, and anything set through $TERMINAL.
+        _ => {
+            if let Some(title) = title {
+                args.extend(["-T".into(), title]);
+            }
+            args.push("-e".into());
+        }
     }
-    args.push("-e".into());
-    args.extend(launch);
-    Ok(vec![ResolvedAction {
-        program: "x-terminal-emulator".into(),
+    args.extend(command);
+    ResolvedAction {
+        program: terminal.into(),
         args,
-    }])
+    }
 }
 
 fn classify_agent_process(cmdline: &[u8]) -> Option<&'static str> {
@@ -3001,6 +3054,30 @@ fn hyprland_windows_from_json(output: &str) -> Vec<VisibleWindow> {
         .collect()
 }
 
+/// Dispatch arguments that focus a Hyprland window, which also switches to its
+/// workspace and monitor. Hyprland 0.55 replaced the classic dispatcher syntax with
+/// Lua expressions, so the classic form comes first and the Lua form follows.
+fn hyprland_focus_dispatches(address: &str) -> [Vec<String>; 2] {
+    [
+        vec![
+            "dispatch".into(),
+            "focuswindow".into(),
+            format!("address:{address}"),
+        ],
+        vec![
+            "dispatch".into(),
+            format!("hl.dsp.focus({{ window = \"address:{address}\" }})"),
+        ],
+    ]
+}
+
+fn focus_hyprland_window(program: &Path, address: &str) -> bool {
+    hyprland_focus_dispatches(address).iter().any(|arguments| {
+        let arguments = arguments.iter().map(String::as_str).collect::<Vec<_>>();
+        run_wmctrl(program, &arguments)
+    })
+}
+
 /// Brings the terminal hosting the herdr client to the front after a focus change.
 fn raise_herdr_terminal() {
     let clients = herdr_client_pids(Path::new("/proc"));
@@ -3024,10 +3101,7 @@ fn raise_herdr_terminal() {
             .iter()
             .find_map(|pid| visible_window_id_for_process(Path::new("/proc"), &windows, *pid))
         {
-            run_wmctrl(
-                &program,
-                &["dispatch", "focuswindow", &format!("address:{address}")],
-            );
+            focus_hyprland_window(&program, &address);
         }
         return;
     }
@@ -3064,13 +3138,17 @@ fn resolve_action_command(action: &Value, allow_shell_actions: bool) -> Option<R
             &["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"],
         )),
         "music" => Some(fixed("playerctl", &["play-pause"])),
+        "media-previous" => Some(fixed("playerctl", &["previous"])),
+        "media-next" => Some(fixed("playerctl", &["next"])),
+        "terminal" => Some(fixed(&terminal_program(), &[])),
         "lock" => Some(fixed("xdg-screensaver", &["lock"])),
         "website" if target.starts_with("http://") || target.starts_with("https://") => {
             Some(fixed("xdg-open", &[target]))
         }
-        "folder" if target.starts_with('/') || target.starts_with("file:") => {
-            Some(fixed("xdg-open", &[target]))
-        }
+        "folder" => folder_target_path(target).map(|path| ResolvedAction {
+            program: "xdg-open".into(),
+            args: vec![path],
+        }),
         "launch" | "command" | "hotkey" if allow_shell_actions => {
             let command = action
                 .get("command")
@@ -3089,6 +3167,147 @@ fn resolve_action_command(action: &Value, allow_shell_actions: bool) -> Option<R
         }
         _ => None,
     }
+}
+
+const TERMINAL_PROGRAMS: &[&str] = &[
+    "xdg-terminal-exec",
+    "ghostty",
+    "kitty",
+    "alacritty",
+    "foot",
+    "wezterm",
+    "gnome-terminal",
+    "kgx",
+    "konsole",
+    "xfce4-terminal",
+    "x-terminal-emulator",
+    "xterm",
+];
+
+/// The user's terminal: `$TERMINAL` when it names a trusted program, else the first
+/// installed common terminal.
+fn terminal_program() -> String {
+    let preferred = std::env::var("TERMINAL")
+        .ok()
+        .map(|terminal| terminal.trim().to_string())
+        .filter(|terminal| !terminal.is_empty() && !terminal.contains(char::is_whitespace));
+    preferred
+        .into_iter()
+        .chain(TERMINAL_PROGRAMS.iter().map(|program| program.to_string()))
+        .find(|program| trusted_program_path(program).is_ok())
+        .unwrap_or_else(|| TERMINAL_PROGRAMS[0].to_string())
+}
+
+/// Folder targets: absolute paths, `file:` URLs, `~/…`, and XDG user folders such as
+/// `xdg:DOWNLOAD` or `xdg:PICTURES/Screenshots`, which follow localized folder names.
+fn folder_target_path(target: &str) -> Option<String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let config_home = user_config_home(
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    )
+    .ok();
+    let user_dirs =
+        config_home.and_then(|config| fs::read_to_string(config.join("user-dirs.dirs")).ok());
+    expand_folder_target(target, home.as_deref(), user_dirs.as_deref())
+}
+
+fn expand_folder_target(
+    target: &str,
+    home: Option<&Path>,
+    user_dirs: Option<&str>,
+) -> Option<String> {
+    if target.starts_with('/') || target.starts_with("file:") {
+        return Some(target.to_string());
+    }
+    let home = home.filter(|home| home.is_absolute())?;
+    if target == "~" {
+        return Some(home.to_string_lossy().into_owned());
+    }
+    if let Some(rest) = target.strip_prefix("~/") {
+        return Some(home.join(rest).to_string_lossy().into_owned());
+    }
+    let rest = target.strip_prefix("xdg:")?;
+    let (name, subfolder) = rest.split_once('/').unwrap_or((rest, ""));
+    if !matches!(
+        name,
+        "DESKTOP" | "DOCUMENTS" | "DOWNLOAD" | "MUSIC" | "PICTURES" | "VIDEOS"
+    ) {
+        return None;
+    }
+    let configured = user_dirs.and_then(|dirs| {
+        dirs.lines().find_map(|line| {
+            let value = line.trim().strip_prefix(&format!("XDG_{name}_DIR="))?;
+            let value = value.trim().trim_matches('"');
+            if let Some(relative) = value.strip_prefix("$HOME/") {
+                Some(home.join(relative))
+            } else if value == "$HOME" {
+                Some(home.to_path_buf())
+            } else {
+                Some(PathBuf::from(value)).filter(|path| path.is_absolute())
+            }
+        })
+    });
+    let fallback = || {
+        let mut name = name.to_lowercase();
+        name[..1].make_ascii_uppercase();
+        home.join(if name == "Download" {
+            "Downloads"
+        } else {
+            &name
+        })
+    };
+    let folder = configured.unwrap_or_else(fallback);
+    let folder = if subfolder.is_empty() {
+        folder
+    } else {
+        folder.join(subfolder)
+    };
+    Some(folder.to_string_lossy().into_owned())
+}
+
+/// Why a key cannot work yet, or `None` when it is ready to press.
+fn action_setup_issue(action: &Value, allow_shell_actions: bool) -> Option<String> {
+    let id = action.get("id").and_then(Value::as_str)?;
+    if id == "ai-agent" {
+        let agent = action
+            .get("agent")
+            .and_then(Value::as_str)
+            .unwrap_or("codex");
+        if find_agent_executable(agent).is_none() {
+            return Some(format!("Needs the {agent} CLI"));
+        }
+        if trusted_program_path(&terminal_program()).is_err() {
+            return Some("No terminal app found".into());
+        }
+        return None;
+    }
+    if matches!(id, "herdr" | "sound") || screenshot_kind(action).is_some() {
+        return None;
+    }
+    if matches!(id, "scene" | "record" | "chat") {
+        return Some("Needs the OBS integration, which is not available yet".into());
+    }
+    if is_shell_action(action) && !allow_shell_actions {
+        return Some(format!(
+            "Shell actions are off; start Studio with {SHELL_ACTION_OPT_IN}=1"
+        ));
+    }
+    let Some(resolved) = resolve_action_command(action, allow_shell_actions) else {
+        return Some(match id {
+            "website" => "Needs a website URL".into(),
+            "folder" => "Needs a folder path".into(),
+            _ => "Needs a command".into(),
+        });
+    };
+    if trusted_program_path(&resolved.program).is_err() {
+        return Some(if id == "terminal" {
+            "No terminal app found".into()
+        } else {
+            format!("Needs {}", resolved.program)
+        });
+    }
+    None
 }
 
 fn shell_action(command: &str) -> ResolvedAction {
@@ -3408,6 +3627,9 @@ fn valid_action_id(id: &str) -> bool {
             | "screenshot-area"
             | "screenshot-window"
             | "music"
+            | "media-previous"
+            | "media-next"
+            | "terminal"
             | "lock"
             | "ai-agent"
             | "herdr"
@@ -3791,6 +4013,39 @@ async fn sync_key_visual(
         .map_err(error_text)?
 }
 
+/// The terminal AI sessions open in, and for xdg-terminal-exec the entry it selects.
+#[tauri::command]
+fn default_terminal() -> Value {
+    let program = terminal_program();
+    let Ok(path) = trusted_program_path(&program) else {
+        return json!({"found": false, "program": Value::Null, "entry": Value::Null});
+    };
+    let entry = (program == "xdg-terminal-exec")
+        .then(|| {
+            Command::new(path)
+                .arg("--print-id")
+                .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .output()
+                .ok()
+        })
+        .flatten()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|id| id.trim().trim_end_matches(".desktop").to_string())
+        .filter(|id| !id.is_empty() && id.len() <= 120);
+    json!({"found": true, "program": program, "entry": entry})
+}
+
+#[tauri::command]
+fn action_setup_issues(state: State<'_, AppState>, keys: Vec<Value>) -> Vec<Option<String>> {
+    keys.iter()
+        .take(64)
+        .map(|key| action_setup_issue(key, state.0.allow_shell_actions))
+        .collect()
+}
+
 #[tauri::command]
 fn herdr_status(state: State<'_, AppState>) -> Value {
     lock(&state.0.herdr).public_state()
@@ -3939,6 +4194,8 @@ pub fn run() {
             sync_deck,
             sync_key_visual,
             herdr_status,
+            action_setup_issues,
+            default_terminal,
             herdr_next_page,
             store_asset,
             store_sound,
@@ -3990,6 +4247,105 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launches_agents_with_each_terminals_own_options() {
+        let command = || vec!["/usr/bin/env".to_string(), "claude".to_string()];
+        let title = || Some("N1 CLAUDE 1".to_string());
+        let args = |terminal| terminal_launch(terminal, title(), command()).args;
+        assert_eq!(
+            args("xdg-terminal-exec"),
+            ["--title=N1 CLAUDE 1", "--", "/usr/bin/env", "claude"]
+        );
+        assert_eq!(
+            args("ghostty"),
+            ["--title=N1 CLAUDE 1", "-e", "/usr/bin/env", "claude"]
+        );
+        assert_eq!(
+            args("foot"),
+            ["--title", "N1 CLAUDE 1", "/usr/bin/env", "claude"]
+        );
+        assert_eq!(
+            args("alacritty"),
+            ["-T", "N1 CLAUDE 1", "-e", "/usr/bin/env", "claude"]
+        );
+        assert_eq!(
+            args("gnome-terminal"),
+            ["--title=N1 CLAUDE 1", "--", "/usr/bin/env", "claude"]
+        );
+        assert_eq!(
+            terminal_launch("wezterm", None, command()).args,
+            ["start", "--", "/usr/bin/env", "claude"]
+        );
+    }
+
+    #[test]
+    fn expands_home_and_localized_xdg_folders() {
+        let home = Path::new("/home/ana");
+        let dirs = "# comment\nXDG_PICTURES_DIR=\"$HOME/Bilder\"\nXDG_DOWNLOAD_DIR=\"/data/dl\"\n";
+        assert_eq!(
+            expand_folder_target("~", Some(home), None).as_deref(),
+            Some("/home/ana")
+        );
+        assert_eq!(
+            expand_folder_target("~/Projects", Some(home), None).as_deref(),
+            Some("/home/ana/Projects")
+        );
+        assert_eq!(
+            expand_folder_target("xdg:PICTURES/Screenshots", Some(home), Some(dirs)).as_deref(),
+            Some("/home/ana/Bilder/Screenshots")
+        );
+        assert_eq!(
+            expand_folder_target("xdg:DOWNLOAD", Some(home), Some(dirs)).as_deref(),
+            Some("/data/dl")
+        );
+        assert_eq!(
+            expand_folder_target("xdg:DOWNLOAD", Some(home), None).as_deref(),
+            Some("/home/ana/Downloads")
+        );
+        assert_eq!(expand_folder_target("xdg:SECRETS", Some(home), None), None);
+        assert_eq!(expand_folder_target("Documents", Some(home), None), None);
+        assert_eq!(
+            expand_folder_target("/srv/media", None, None).as_deref(),
+            Some("/srv/media")
+        );
+    }
+
+    #[test]
+    fn reports_keys_that_need_setup() {
+        assert_eq!(
+            action_setup_issue(&json!({"id": "website", "target": "Open URL"}), false).as_deref(),
+            Some("Needs a website URL")
+        );
+        assert!(
+            action_setup_issue(&json!({"id": "scene", "target": "Main Camera"}), false)
+                .is_some_and(|issue| issue.contains("OBS"))
+        );
+        assert!(
+            action_setup_issue(&json!({"id": "launch", "command": "obs"}), false)
+                .is_some_and(|issue| issue.contains(SHELL_ACTION_OPT_IN))
+        );
+        assert_eq!(
+            action_setup_issue(
+                &json!({"id": "launch", "target": "Choose an application"}),
+                true
+            )
+            .as_deref(),
+            Some("Needs a command")
+        );
+        assert_eq!(
+            action_setup_issue(
+                &json!({"id": "website", "target": "https://example.com"}),
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            action_setup_issue(&json!({"id": "screenshot-area"}), false),
+            None
+        );
+        assert_eq!(action_setup_issue(&json!({"id": "ai-agent"}), false), None);
+    }
 
     #[test]
     fn reserves_slots_only_below_the_limit() {
@@ -4622,6 +4978,22 @@ mod tests {
         assert!(!valid_hardware_input(
             &json!({"type": "knob_rotate", "knob": "knob_1", "direction": "up"})
         ));
+    }
+
+    #[test]
+    fn focuses_hyprland_windows_with_classic_and_lua_dispatchers() {
+        let [classic, lua] = hyprland_focus_dispatches("0x55fed2575bd0");
+        assert_eq!(
+            classic,
+            ["dispatch", "focuswindow", "address:0x55fed2575bd0"]
+        );
+        assert_eq!(
+            lua,
+            [
+                "dispatch",
+                "hl.dsp.focus({ window = \"address:0x55fed2575bd0\" })"
+            ]
+        );
     }
 
     #[test]

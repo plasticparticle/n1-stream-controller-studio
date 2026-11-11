@@ -32,8 +32,11 @@ thought, “This screenshot needs fewer clicks and considerably more hardware”
 
 Good news! N1 Stream Controller Studio currently delivers:
 
-- Six ready-made profiles: Live Stream, Video Edit, Daily Desk, Codex CLI, Claude CLI,
-  and Gemini CLI
+- Ready-made profiles: Daily Desk (works out of the box), Live Stream, Codex CLI,
+  Claude CLI, Gemini CLI, and herdr; a Video Edit starting point lives in
+  `examples/video-edit.json`, since editing shortcuts depend on the editor
+- Keys that cannot work yet show a yellow **SET UP** badge on the N1 and in the editor,
+  with the reason in the inspector
 - Native 96×96 key artwork, animated icons, two-state buttons, and automatic hardware sync
 - Add, duplicate, delete, and factory-reset profile controls
 - Up to eight pages per profile, with physical profile and page switching
@@ -132,7 +135,10 @@ the inspector. Pressing the key types the saved prompt into that session and sub
 Prompts are injected as literal text rather than through a shell, so punctuation and
 shell-like characters remain literal.
 
-Sessions open through the system-configured `x-terminal-emulator`. Studio tags each
+Sessions open in `$TERMINAL`, or the first installed of `xdg-terminal-exec`, Ghostty,
+kitty, Alacritty, foot, WezTerm, GNOME Terminal, Console, Konsole, Xfce Terminal,
+`x-terminal-emulator`, and xterm; the AI key inspector names the terminal it found.
+Studio tags each
 terminal with its model, unique label, and project; pressing the same key again focuses
 that exact terminal instead of manufacturing another window. `wmctrl` and `xdotool`
 supply window activation and prompt injection and are recommended by the Debian package.
@@ -332,9 +338,31 @@ and are disabled by default. To opt in for a trusted local profile:
 N1_STUDIO_ALLOW_SHELL_ACTIONS=1 n1-stream-controller-studio
 ```
 
-Built-in actions—including fixed AI workflows, websites, folders, screenshots, and
-sound playback—do not require this opt-in. Never enable shell actions for a profile
+Built-in actions—including fixed AI workflows, websites, folders, the terminal, media
+controls, screenshots, and sound playback—do not require this opt-in. Never enable shell actions for a profile
 you did not create and inspect.
+
+## Daily Desk
+
+The default profile uses only built-in actions, so every key works without the
+shell-action opt-in:
+
+| Row | Keys |
+| --- | --- |
+| 1 | Terminal, Home folder, Downloads, Web, Lock |
+| 2 | Previous, Play/Pause, Next, Microphone mute, Speaker mute |
+| 3 | Area, window, and full-screen screenshots, Screenshots folder, one free key |
+
+Terminal starts `$TERMINAL`, or the first installed of `xdg-terminal-exec`, Ghostty,
+kitty, Alacritty, foot, WezTerm, GNOME Terminal, Console, Konsole, Xfce Terminal, and
+xterm. Media keys need `playerctl`; the mute keys use `wpctl` (PipeWire). A key whose
+program is missing shows **SET UP** with the program it needs.
+
+Folder keys accept absolute paths, `~/…`, and XDG user folders such as
+`xdg:DOWNLOAD` or `xdg:PICTURES/Screenshots`, which follow localized folder names.
+
+Profiles saved before this change keep their keys; **Reset** in the profile menu loads
+the new Daily Desk.
 
 ## Operator’s command card
 
